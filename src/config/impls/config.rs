@@ -1677,6 +1677,32 @@ impl ConfigStore {
             .collect()
     }
 
+    /// 同时运行的 AI 会话上限（默认 3，钳制在 1..=5）。
+    pub fn ai_max_parallel(&self) -> usize {
+        match self.cache.ai_max_parallel {
+            0 => crate::app::ai_store::DEFAULT_MAX_PARALLEL,
+            n => (n as usize).clamp(1, 5),
+        }
+    }
+
+    /// 设置并发上限（1–5）；设置页的入口留到 M2，这里先给测试与后续 UI 用。
+    #[allow(dead_code)]
+    pub fn set_ai_max_parallel(&mut self, n: usize) {
+        self.cache.ai_max_parallel = n.clamp(1, 5) as u8;
+    }
+
+    /// AI 面板宽度档位：360 或 520，其它值一律按 360。
+    pub fn ai_panel_width(&self) -> u16 {
+        match self.cache.ai_panel_width {
+            520 => 520,
+            _ => 360,
+        }
+    }
+
+    pub fn set_ai_panel_width(&mut self, width: u16) {
+        self.cache.ai_panel_width = if width >= 520 { 520 } else { 360 };
+    }
+
     pub fn set_ai_settings(
         &mut self,
         protocol: String,

@@ -12,7 +12,7 @@ SFTP），rssh 提供「AI 运维 Copilot 范式」（无感上下文捕获、AI
 ┌──────────────────────────────────────────────────────────┐
 │                      Slint 视图层（ui-slint）            │
 │  ┌────────────────┐ ┌─────────────────┐ ┌──────────────┐ │
-│  │ 资源监控侧边栏 │ │  PTY 终端视窗   │ │ AI 协同抽屉  │ │
+│  │ 资源监控侧边栏 │ │  PTY 终端视窗   │ │ AI 面板 dock │ │
 │  │ (FengheShell)    │ │ 命令块 / ANSI   │ │ ai_panel     │ │
 │  └────────────────┘ └─────────────────┘ └──────────────┘ │
 ├──────────────────────────────────────────────────────────┤
@@ -25,20 +25,44 @@ SFTP），rssh 提供「AI 运维 Copilot 范式」（无感上下文捕获、AI
 │  shell         POSIX / PowerShell / cmd 适配             │
 ├──────────────────────────────────────────────────────────┤
 │                 FengheShell 宿主（src/app/ai.rs）           │
-│  TabAi        每标签的上下文 + 抽屉状态                   │
+│  TabContext   每标签的终端上下文（命令块 + 执行锁）        │
+│  Conversation 会话：消息 / 状态 / 锚点 / 审批 / 中断       │
 │  UiRuntime    ToolRuntime 实现：写 PTY / 读远端文件       │
 └──────────────────────────────────────────────────────────┘
 ```
 
 ## 怎么用
 
-1. 终端状态条右侧点 `AI` 打开抽屉，或按 **Ctrl+Space** 开关当前标签的抽屉。
+1. 终端状态条右侧的**五芒星**（或 **Ctrl+Space**）开关右侧 AI 面板；头部标题点击
+   展开会话列表，`+` / **Ctrl+Shift+O**（macOS `⌘⇧O`）新建会话。面板打开时终端区
+   按面板宽度（360 / 520 两档）收缩，不会盖住终端。
 2. 配置 LLM：设置 → Interface → **AI Copilot** 页（或抽屉标题栏的齿轮）：协议 /
    端点 / 模型 / API Key，以及「本地脱敏」与「只读命令免确认执行」两个开关。设置写进
    `sessions.json` 的 `ai_*` 字段，API Key 与其它会话密码一样用 ChaCha20-Poly1305
    加密落盘；输入框里的密钥是只写的，保存后即清空，已保存的密钥不会被读回界面。
 3. 直接提问，或什么都不问 —— CPU / 内存 / 磁盘越界时打开抽屉会自动起一轮排查。
 4. AI 给出的命令会以卡片形式出现在对话里，按风险等级决定你能怎么操作（见下）。
+
+## 多会话面板（M1）
+
+面板是**应用级右侧 dock**，会话不属于任何终端标签：
+
+| 动作 | 行为 |
+| --- | --- |
+| 收起面板 / 切标签 / 切会话 / 把标签拖到别的窗口 | **都不打断**正在跑的一轮；消息继续写进 Rust 侧会话表，切回即重放 |
+| 新建会话 | 锚定当前终端标签（welcome 标签上建纯对话会话），标题取首条提问前 30 字 |
+| 关闭会话 | 直接删除；正在跑的轮次按「停止」结算（审批按拒绝、pending 卡片作废） |
+| 锚点标签被关闭 | 会话保留，标记锚点失效；后续轮次以无终端上下文运行并在对话里明示 |
+| 并发 | 同时最多 3 条会话在跑（`sessions.json` 的 `ai_max_parallel`，可调 1–5）；满了发送即提示，**不排队** |
+| 同锚点执行 | 标签级执行锁：两个会话抢同一个 PTY 时，第二个拿到 `anchor_busy`，一个字节都不写进去 |
+| 退出应用 | 所有在跑的轮次按「停止」取消，会话同步 flush 落盘 |
+
+持久化：`ai_conversations.json`（数据目录，与 `sessions.json` 同级），0600 +
+tmp/rename 原子写，每轮结束防抖 500ms 批量写、退出时 flush；**落盘前消息过脱敏规则**。
+重启后会话恢复为 `interrupted`，`pending` 审批卡片一律作废为 `expired` —— 审批通道是
+进程内的 `oneshot`，跨不了进程。旧版本的对话本来就不落盘，因此**不做迁移**。
+
+Ask / Agent 是**会话级**的：切换模式作用于当前会话，全局 `ai_mode` 只是新会话的默认值。
 
 ## 工作方式：Ask / Agent（参考 GitHub Copilot 的能力分层）
 
@@ -280,8 +304,11 @@ the AI side is injected as an independent crate.
 
 ## Usage
 
-1. Click `AI` on the terminal status strip, or press **Ctrl+Space** to toggle the
-   drawer of the active tab.
+1. Click the five-pointed star on the terminal status strip (or press
+   **Ctrl+Space**) to toggle the right-hand AI panel; click the header title for the
+   conversation list, `+` / **Ctrl+Shift+O** (macOS `⌘⇧O`) for a new conversation.
+   While open, the terminal area shrinks by the panel width (360 / 520) instead of
+   being covered.
 2. Configure the LLM under Settings -> Interface -> **AI Copilot** (or the gear in
    the drawer header): protocol /
    endpoint / model / API key, plus "Redact secrets locally" and
@@ -292,6 +319,32 @@ the AI side is injected as an independent crate.
    alert thresholds, opening the drawer starts a triage round automatically.
 4. Suggested commands arrive as cards; the risk tier decides what you can do
    with them (see below).
+
+## Multi-conversation panel (M1)
+
+The panel is an **application-level right dock**, and conversations do not belong
+to a terminal tab:
+
+| Action | Behaviour |
+| --- | --- |
+| Close the panel / switch tabs / switch conversations / drag a tab to another window | **Never interrupts** a running round; messages keep landing in the Rust-side store and are replayed when you return |
+| New conversation | Anchored to the active terminal tab (a text-only one on the welcome tab); the title is the first 30 characters of the first question |
+| Close conversation | Deletes it; a running round is settled like "Stop" (approvals rejected, pending cards voided) |
+| Anchor tab closed | The conversation survives, marked anchor-lost; later rounds run text-only and say so in the transcript |
+| Concurrency | At most 3 conversations run at once (`ai_max_parallel`, 1-5 in `sessions.json`); sending beyond that is refused with a message, never queued |
+| Execution on the same anchor | Per-tab execution lock: the second conversation gets `anchor_busy` and writes nothing into the PTY |
+| App exit | Every running round is cancelled like "Stop" and the store is flushed synchronously |
+
+Persistence: `ai_conversations.json` in the data directory (next to
+`sessions.json`), 0600 with tmp/rename atomic writes, debounced 500 ms per round
+plus an exit flush; **messages are redacted before they hit the disk**. On restart
+conversations come back as `interrupted` and pending approval cards become
+`expired` - the approval channel is a process-local `oneshot` and cannot cross
+processes. The previous build never persisted conversations, so **nothing is
+migrated**.
+
+Ask / Agent is **per conversation**: switching the mode applies to the current
+conversation, and the global `ai_mode` is only the default for new ones.
 
 ## Working modes: Ask / Agent (mirroring GitHub Copilot's layers)
 

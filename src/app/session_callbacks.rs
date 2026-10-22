@@ -1256,7 +1256,7 @@ pub(super) fn wire_session_callbacks(
             tabs_model.push(TabInfo {
                 id: tab_id.clone().into(),
                 title_len: tab_title_len(&tab_title),
-                title: tab_title.into(),
+                title: tab_title.clone().into(),
                 kind: "terminal".into(),
                 connected: false,
             });
@@ -1276,6 +1276,7 @@ pub(super) fn wire_session_callbacks(
             terminals_model.push(TerminalState {
                 id: tab_id.clone().into(),
                 status: t("连接中...", "Connecting...").into(),
+                title: tab_title.clone().into(),
                 spans: ModelRc::from(std::rc::Rc::new(VecModel::<TermSpan>::default())),
                 cursor_row: 0,
                 cursor_col: 0,
@@ -1311,11 +1312,8 @@ pub(super) fn wire_session_callbacks(
                 sftp_panel_height: sftp_h_default,
                 sftp_panel_width: sftp_w_default,
                 sftp_saved_height: sftp_h_default,
-                // AI Copilot drawer starts closed; its conversation is rebuilt
-                // from the Rust-side copy whenever it is reopened (#ai-copilot).
-                ai_messages: ModelRc::from(std::rc::Rc::new(VecModel::<AiMessage>::default())),
-                ai_open: false,
-                ai_busy: false,
+                // AI completion is the only per-tab AI state left (#ai-copilot):
+                // conversations moved to the application-level panel.
                 ai_completion: "".into(),
             });
             // Create vt100 parser for this tab (default 24×80; resized on first

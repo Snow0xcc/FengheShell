@@ -40,10 +40,10 @@ pub struct TabRoute {
     pub sftp_handles: SftpHandles,
     pub sftp_last_cwd: SftpLastCwd,
     pub follow_cd: Arc<std::sync::atomic::AtomicBool>,
-    /// Per-tab AI Copilot state (OSC 133 command blocks + drawer content).
-    /// Shared with the shell pump, which feeds every output chunk into the
-    /// block parser off the UI thread.
-    pub ai: crate::app::ai::AiTabHandle,
+    /// Per-tab AI terminal context (OSC 133 command blocks + sentinel exec
+    /// capture). Read-only for conversations: shared with the shell pump,
+    /// which feeds every output chunk into the block parser off the UI thread.
+    pub context: crate::app::ai::TabContextHandle,
 }
 
 /// Tab id → its current delivery route. Shared with the pump threads.
@@ -170,6 +170,9 @@ pub struct AppCore {
     /// Tab id → delivery route, shared with the session pump threads so a
     /// tab can be retargeted at another window while its pumps keep running.
     pub tab_routes: TabRoutes,
+    /// Process-wide AI conversations (#ai-copilot multi-session). Lives here,
+    /// not on a tab: closing the panel / tab / window must not kill a round.
+    pub conversations: crate::app::ai_store::ConversationStoreHandle,
     /// Set once the first window of the process lifetime finishes opening.
     /// The in-app update check runs only for that window — keying it off
     /// `registry.count() == 1` would re-fire after close-then-open.

@@ -370,6 +370,13 @@ pub struct ConfigFile {
     /// 不影响正在跑的轮次。
     #[serde(default)]
     pub ai_skills: Vec<AiSkillSpec>,
+    /// 同时运行的 AI 会话上限（1–5，默认 3；见 AI_PANEL_REQUIREMENTS D3）。
+    /// 0 = 未设置，读取时回落到 3。
+    #[serde(default)]
+    pub ai_max_parallel: u8,
+    /// AI 面板宽度档位：360 | 520（其它值回落到 360）。0 = 未设置。
+    #[serde(default)]
+    pub ai_panel_width: u16,
     /// One-time default-layout migration marker (#new-user-defaults). 0 = config
     /// predates the migration. `migrate_defaults` bumps it to `DEFAULTS_REV` after
     /// pushing the new look (default wallpaper / welcome-as-sidebar / right-docked

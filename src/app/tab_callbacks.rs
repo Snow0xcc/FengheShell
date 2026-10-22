@@ -132,6 +132,7 @@ pub(super) fn wire_tab_callbacks(
         let splitters_model = splitters_model.clone();
         let tab_titles = tab_titles.clone();
         let tab_routes = core.tab_routes.clone();
+        let ai_core = core.clone();
         window.on_pane_tab_closed(move |_pane_id: i32, id: SharedString| {
             let id = id.to_string();
             if id == "welcome" {
@@ -162,6 +163,9 @@ pub(super) fn wire_tab_callbacks(
             if let Ok(mut routes) = tab_routes.lock() {
                 routes.remove(&id);
             }
+            // AI 会话不随标签消失：把它们标记为「锚点已失效」，后续轮次以
+            // 无终端上下文继续跑，面板里明示（#ai-copilot）。
+            crate::app::ai_callbacks::on_tab_closed(&ai_core, &id);
 
             // Remove from tabs + terminals models.
             let mut idx = None;

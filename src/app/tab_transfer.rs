@@ -418,9 +418,9 @@ pub(super) fn move_tab_between_windows(
     if let Ok(routes) = core.tab_routes.lock() {
         if let Some(route) = routes.get(tab_id) {
             if let Ok(mut r) = route.lock() {
-                // Keep the per-tab AI context: the command blocks are the
-                // tab's history, they must survive a window move.
-                let ai = r.ai.clone();
+                // Keep the per-tab AI terminal context: the command blocks are
+                // the tab's history, they must survive a window move.
+                let context = r.context.clone();
                 *r = TabRoute {
                     window: dst.weak.clone(),
                     editor: dst.editor_win.as_weak(),
@@ -433,7 +433,7 @@ pub(super) fn move_tab_between_windows(
                     sftp_handles: dst.sftp_handles.clone(),
                     sftp_last_cwd: dst.sftp_last_cwd.clone(),
                     follow_cd: dst.follow_cd.clone(),
-                    ai,
+                    context,
                 };
             }
         }
@@ -445,9 +445,9 @@ pub(super) fn move_tab_between_windows(
     if let Some(row) = term_row {
         dst.terminals_model.push(row);
     }
-    // AI Copilot drawer rows live in Rust, so they need a re-sync into the
-    // new window's model after the move.
-    resync_conversation(core, &dst.weak, tab_id);
+    // AI Copilot 会话挂在 AppCore 上（不属于标签），换窗口时不需要迁移；
+    // 只有面板正在看的那条会话需要在新窗口里重放一次。
+    super::ai_callbacks::resync_active(core, &dst.main_win);
     if let Some(w) = dst.weak.upgrade() {
         refresh_panes(
             &w,

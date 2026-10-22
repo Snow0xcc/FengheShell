@@ -8,6 +8,7 @@
 mod agents;
 mod ai;
 mod ai_callbacks;
+pub(crate) mod ai_store;
 mod auth_dialogs;
 mod aux_windows;
 pub(crate) mod core;
@@ -264,6 +265,9 @@ pub fn run(_intent: crate::app::launch::LaunchIntent) -> Result<()> {
         registry: Rc::new(WindowRegistry::default()),
         window_states: Rc::new(RefCell::new(HashMap::new())),
         tab_routes: Arc::new(Mutex::new(HashMap::new())),
+        conversations: Arc::new(Mutex::new(
+            crate::app::ai_store::ConversationStore::load_default(),
+        )),
         first_window_done: Cell::new(false),
         update: RefCell::new(update::State::default()),
     });
@@ -341,6 +345,9 @@ pub fn run(_intent: crate::app::launch::LaunchIntent) -> Result<()> {
     #[cfg(windows)]
     crate::update::windows::cleanup_stale_downloads();
     crate::update::inplace::cleanup_after_update();
+    // AI 会话落盘（防抖 500ms + 退出 flush）。必须在第一个窗口打开前装好：
+    // 启动恢复出来的会话也要能被后续轮次正常落盘。
+    ai_callbacks::install_persist(&core);
     open_window(core.clone(), false, None)?;
     let tray_timer = tray::install(core.clone());
 
@@ -363,6 +370,8 @@ pub fn run(_intent: crate::app::launch::LaunchIntent) -> Result<()> {
     // hard-exit unconditionally. The event-loop error path goes through here
     // too: propagating with `?` would hand the runtime to the TLS destructor
     // chain, where a wedged blocking thread could hang the process forever.
+    // 退出前沿用「停止」语义取消所有在跑的轮次，并同步落盘一次。
+    ai_callbacks::shutdown(&core);
     update::cleanup(&core);
     NEW_WINDOW_CORE.with(|c| *c.borrow_mut() = None);
     tray::clear();

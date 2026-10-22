@@ -1,9 +1,12 @@
-//! AI Copilot 抽屉：终端上下文采集 + Triage 编排 + Human-in-the-loop Run Gate。
+//! AI Copilot：终端上下文采集 + Triage 编排 + Human-in-the-loop Run Gate。
 //!
 //! 这一层是 FengheShell 与 ai-copilot crate 之间唯一的粘合面：
 //!
-//! - 每个终端标签一份 [`TabAi`]，从会话输出流里抽取命令块（OSC 133 优先，
+//! - 每个终端标签一份 [`TabContext`]，从会话输出流里抽取命令块（OSC 133 优先，
 //!   FengheShell 自带的 OSC 697 shell hook 兜底），只保留最近 8KB 上下文；
+//!   它只读终端，不含任何对话状态；
+//! - 会话（消息 / 状态 / 审批 / 中断开关）在 [`crate::app::ai_store`] 里，
+//!   生命周期独立于标签 —— 面板收起、切标签、换窗口都不打断正在跑的一轮；
 //! - [`UiRuntime`] 实现 ai-copilot 的 `ToolRuntime`：把 AI 提议的命令写回
 //!   **用户可见的 PTY**，退出码靠注入的 sentinel 回声抓取；
 //! - Run Gate 的三档裁决决定命令是「回车执行」还是「仅填入终端」。
@@ -31,7 +34,7 @@ use slint::{ModelRc, VecModel};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 
-use crate::app::panes::set_terminal_row;
+use crate::app::ai_store::ConversationStoreHandle;
 use crate::config::Session;
 use crate::resource::SystemSnapshot;
 use crate::ssh::SessionCommand;
@@ -45,6 +48,8 @@ pub(super) const EXEC_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) const MAX_CONTEXT_BLOCKS: usize = 8;
 /// 注入 PTY 的 sentinel marker 前缀；带它的命令不进 AI 上下文。
 pub(super) const AI_SENTINEL_PREFIX: &str = "__msai_";
+/// 新会话还没有首条提问时的占位标题。
+pub(super) const UNTITLED_TITLE: &str = "New conversation";
 
 // ─── 每标签的 AI 上下文 ────────────────────────────────────────────
 
@@ -82,7 +87,8 @@ impl ExecCapture {
     }
 }
 
-pub(crate) struct TabAi {
+/// 终端侧的只读上下文 + 执行态。会话从这里取快照，自己不再持有命令块。
+pub(crate) struct TabContext {
     parser: BlockParser,
     blocks: ContextWindow,
     /// 自上一个块边界以来累积的输出（OSC 697 兜底路径才会用到）。
@@ -90,23 +96,15 @@ pub(crate) struct TabAi {
     /// 见到过 OSC 133 就永远走语义块解析，不再用 hook 兜底（避免双计数）。
     saw_osc133: bool,
     exec: Option<ExecCapture>,
-    /// 引擎正在等待的用户裁决：卡片 id → 回复通道。
-    approval: Option<(String, oneshot::Sender<bool>)>,
-    /// 当前这一轮的中断开关；点「停止」时置位，LLM 请求与命令等待都会退出。
-    cancel: Option<Arc<AtomicBool>>,
-    /// 抽屉内容的权威副本；Slint 模型只是它的镜像。
-    messages: Vec<AiMessage>,
+    /// 同锚点执行锁：两个会话同时往同一 PTY 写命令 + 装 sentinel 会互相踩。
+    exec_lock: Arc<tokio::sync::Mutex<()>>,
     /// 补全请求序号：输入每变一次就自增，旧的补全响应据此作废。
     completion_seq: u64,
-    busy: bool,
-    /// 每次「清空 / 停止」自增：还在跑的旧 ask() 会看到 generation 变了，
-    /// 于是放弃自己的 UI 写入，避免已取消的回复覆盖新会话。
-    generation: u64,
 }
 
-pub(crate) type AiTabHandle = Arc<Mutex<TabAi>>;
+pub(crate) type TabContextHandle = Arc<Mutex<TabContext>>;
 
-impl TabAi {
+impl TabContext {
     pub(crate) fn new() -> Self {
         Self {
             parser: BlockParser::new(),
@@ -114,13 +112,14 @@ impl TabAi {
             hook_out: String::new(),
             saw_osc133: false,
             exec: None,
-            approval: None,
-            cancel: None,
-            messages: Vec::new(),
+            exec_lock: Arc::new(tokio::sync::Mutex::new(())),
             completion_seq: 0,
-            busy: false,
-            generation: 0,
         }
+    }
+
+    /// 同锚点串行化的那把锁（`run_with_sentinel` 期间持有）。
+    pub(super) fn exec_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
+        self.exec_lock.clone()
     }
 
     /// 喂一段 PTY 输出（会话层已解码为文本）。由会话 pump 线程调用。
@@ -174,29 +173,6 @@ impl TabAi {
             .collect()
     }
 
-    /// 登记一次等待用户裁决的卡片。
-    pub(super) fn set_approval(&mut self, id: String, tx: oneshot::Sender<bool>) {
-        // 上一张卡还没回应就又来一张 —— 直接按拒绝结算，引擎不会卡死。
-        if let Some((_, prev)) = self.approval.take() {
-            let _ = prev.send(false);
-        }
-        self.approval = Some((id, tx));
-    }
-
-    /// 用户在抽屉里点了「执行 / 填入 / 拒绝」。返回是否真的回应了某张卡。
-    pub(super) fn answer_approval(&mut self, id: &str, ok: bool) -> bool {
-        match self.approval.take() {
-            Some((cur, tx)) if cur == id => {
-                let _ = tx.send(ok);
-                true
-            }
-            other => {
-                self.approval = other;
-                false
-            }
-        }
-    }
-
     /// Run Gate 第 4 道墙：开始监听一次带 sentinel 的执行。
     pub(super) fn arm_exec(&mut self, marker: &str) {
         self.exec = Some(ExecCapture {
@@ -219,45 +195,6 @@ impl TabAi {
     /// 放弃监听（超时 / 会话断开）。
     pub(super) fn clear_exec(&mut self) {
         self.exec = None;
-    }
-
-    pub(super) fn set_busy(&mut self, busy: bool) {
-        self.busy = busy;
-    }
-
-    pub(super) fn is_busy(&self) -> bool {
-        self.busy
-    }
-
-    pub(super) fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    /// 开一轮新的诊断，拿到它的中断开关。
-    pub(super) fn begin_round(&mut self) -> Arc<AtomicBool> {
-        let flag = Arc::new(AtomicBool::new(false));
-        self.cancel = Some(flag.clone());
-        flag
-    }
-
-    /// 「停止 / 清空」：作废当前轮次，回收等待中的审批，并中断在飞的 LLM 请求。
-    pub(super) fn cancel_generation(&mut self) -> u64 {
-        if let Some(flag) = self.cancel.take() {
-            flag.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-        if let Some((_, tx)) = self.approval.take() {
-            let _ = tx.send(false);
-        }
-        self.exec = None;
-        self.busy = false;
-        self.generation += 1;
-        self.generation
-    }
-
-    /// 清空对话记录（generation 递增，令在飞的回复自行丢弃）。
-    pub(super) fn clear_messages(&mut self) -> Vec<AiMessage> {
-        self.messages.clear();
-        Vec::new()
     }
 }
 
@@ -286,53 +223,65 @@ fn strip_echo(out: String, cmd: &str) -> String {
         .to_string()
 }
 
-// ─── 抽屉内容的 Slint 镜像 ────────────────────────────────────────
+// ─── 面板内容的 Slint 镜像 ────────────────────────────────────────
 
-/// 把一份消息副本刷进 Slint。UI 线程可能正忙，因此统一走事件循环。
-fn sync_messages(weak: &slint::Weak<AppWindow>, tab_id: &str, rows: Vec<AiMessage>) {
+/// 把一份消息副本刷进当前窗口的 AI 面板。
+///
+/// 只有「该窗口正在看这条会话」时才刷 —— 后台会话每 token 克隆整份消息会
+/// 把前台拖卡；切回时 `apply_conversation` 一次性重放。
+fn sync_messages(weak: &slint::Weak<AppWindow>, conversation_id: &str, rows: Vec<AiMessage>) {
     let weak = weak.clone();
-    let tab_id = tab_id.to_string();
+    let conversation_id = conversation_id.to_string();
     let _ = slint::invoke_from_event_loop(move || {
         let Some(win) = weak.upgrade() else {
             return;
         };
-        set_terminal_row(&win, &tab_id, |row| {
-            row.ai_messages = ModelRc::from(Rc::new(VecModel::from(rows.clone())));
-        });
-    });
-}
-
-/// 抽屉忙碌状态同步到 Slint（行存在才生效）。
-fn sync_busy(weak: &slint::Weak<AppWindow>, tab_id: &str, busy: bool) {
-    let weak = weak.clone();
-    let tab_id = tab_id.to_string();
-    let _ = slint::invoke_from_event_loop(move || {
-        if let Some(win) = weak.upgrade() {
-            set_terminal_row(&win, &tab_id, |row| row.ai_busy = busy);
+        if win.get_ai_active_id().as_str() != conversation_id {
+            return;
         }
+        win.set_ai_messages(ModelRc::from(Rc::new(VecModel::from(rows))));
     });
 }
 
-/// 在 TabAi 的消息向量上做一次原子修改，并把结果镜像给 Slint。
+/// 忙碌状态同步到面板（只在该会话正被查看时生效）。
+fn sync_busy(weak: &slint::Weak<AppWindow>, conversation_id: &str, busy: bool) {
+    let weak = weak.clone();
+    let conversation_id = conversation_id.to_string();
+    let _ = slint::invoke_from_event_loop(move || {
+        let Some(win) = weak.upgrade() else {
+            return;
+        };
+        if win.get_ai_active_id().as_str() != conversation_id {
+            return;
+        }
+        win.set_ai_busy(busy);
+    });
+}
+
+/// 在会话的消息向量上做一次原子修改，并把结果镜像给 Slint。
 ///
-/// `generation` 为 None 表示无条件写入（UI 侧操作）；否则只在 generations
-/// 匹配时写入 —— 用户点了「停止」之后，在飞的那次 ask() 就再也不会改动抽屉。
-fn with_messages(
-    ai: &AiTabHandle,
+/// `generation` 为 None 表示无条件写入（UI 侧操作）；否则只在世代匹配时写入
+/// —— 用户点了「停止」之后，在飞的那次 ask() 就再也不会改动面板。
+pub(super) fn with_messages(
+    conversations: &ConversationStoreHandle,
     weak: &slint::Weak<AppWindow>,
-    tab_id: &str,
+    conversation_id: &str,
     generation: Option<u64>,
     f: impl FnOnce(&mut Vec<AiMessage>),
 ) {
     let rows = {
-        let mut guard = ai.lock().unwrap_or_else(|e| e.into_inner());
-        if generation.is_some_and(|g| g != guard.generation()) {
+        let mut guard = conversations.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(conv) = guard.get_mut(conversation_id) else {
+            return;
+        };
+        if generation.is_some_and(|g| g != conv.generation) {
             return;
         }
-        f(&mut guard.messages);
-        guard.messages.clone()
+        f(&mut conv.messages);
+        conv.updated_at = Utc::now();
+        conv.messages.clone()
     };
-    sync_messages(weak, tab_id, rows);
+    sync_messages(weak, conversation_id, rows);
 }
 
 fn risk_tag(r: RiskLevel) -> &'static str {
@@ -402,7 +351,7 @@ fn message_plan_step(index: usize, step: &ai_copilot::triage::PlanStep) -> AiMes
     }
 }
 
-/// 把整份计划快照写进抽屉：已存在的步骤原地更新状态，新增的追加。
+/// 把整份计划快照写进对话：已存在的步骤原地更新状态，新增的追加。
 fn sync_plan_rows(rows: &mut Vec<AiMessage>, plan: &[ai_copilot::triage::PlanStep]) {
     for (index, step) in plan.iter().enumerate() {
         let row = message_plan_step(index, step);
@@ -436,8 +385,8 @@ pub(super) fn audit_log() -> Arc<std::sync::Mutex<ai_copilot::audit::AuditLog>> 
 }
 
 /// 取这个标签的补全序号；同时把「已显示的补全」作废（输入变了）。
-pub(super) fn completion_request(ai: &AiTabHandle) -> u64 {
-    match ai.lock() {
+pub(super) fn completion_request(ctx: &TabContextHandle) -> u64 {
+    match ctx.lock() {
         Ok(mut g) => {
             g.completion_seq += 1;
             g.completion_seq
@@ -451,8 +400,8 @@ pub(super) fn completion_request(ai: &AiTabHandle) -> u64 {
 }
 
 /// 只有最新一次请求的响应才允许写回 UI。
-pub(super) fn completion_is_current(ai: &AiTabHandle, seq: u64) -> bool {
-    ai.lock().map(|g| g.completion_seq == seq).unwrap_or(false)
+pub(super) fn completion_is_current(ctx: &TabContextHandle, seq: u64) -> bool {
+    ctx.lock().map(|g| g.completion_seq == seq).unwrap_or(false)
 }
 
 /// 写回补全结果（空串表示清空）。
@@ -462,7 +411,7 @@ pub(super) fn set_completion(weak: &slint::Weak<AppWindow>, tab_id: &str, text: 
     let tab_id = tab_id.to_string();
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(win) = weak.upgrade() {
-            set_terminal_row(&win, &tab_id, |row| {
+            crate::app::panes::set_terminal_row(&win, &tab_id, |row| {
                 row.ai_completion = value.clone().into()
             });
         }
@@ -490,11 +439,11 @@ pub(super) const ROLE_STEP: i32 = 4;
 /// Agent 模式的计划清单条目（复选框行）。
 pub(super) const ROLE_PLAN_STEP: i32 = 5;
 
-/// 抽屉里追加一条纯文本消息（摘要 / 错误提示）。
+/// 面板里追加一条纯文本消息（摘要 / 错误提示 / 锚点失效提示）。
 pub(super) fn push_notice(
-    ai: &AiTabHandle,
+    conversations: &ConversationStoreHandle,
     weak: &slint::Weak<AppWindow>,
-    tab_id: &str,
+    conversation_id: &str,
     role: i32,
     text: &str,
 ) {
@@ -503,85 +452,98 @@ pub(super) fn push_notice(
         text: text.to_string().into(),
         ..Default::default()
     };
-    with_messages(ai, weak, tab_id, None, |v| v.push(msg));
+    with_messages(conversations, weak, conversation_id, None, |v| v.push(msg));
 }
 
-pub(super) fn clear_conversation(ai: &AiTabHandle, weak: &slint::Weak<AppWindow>, tab_id: &str) {
-    let rows = ai
-        .lock()
-        .map(|mut g| {
-            g.cancel_generation();
-            g.clear_messages()
-        })
-        .unwrap_or_default();
-    sync_messages(weak, tab_id, rows);
-}
-
-/// 抽屉里是否已有对话（决定是否自动发起一轮监控触发的诊断）。
-pub(super) fn has_messages(ai: &AiTabHandle) -> bool {
-    ai.lock().map(|g| !g.messages.is_empty()).unwrap_or(false)
+/// 清空会话记录（世代递增，令在飞的回复自行丢弃）。
+pub(super) fn clear_conversation(
+    conversations: &ConversationStoreHandle,
+    weak: &slint::Weak<AppWindow>,
+    id: &str,
+) {
+    let rows = {
+        let mut guard = conversations.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(conv) = guard.get_mut(id) else {
+            return;
+        };
+        conv.cancel_generation();
+        conv.messages.clear();
+        guard.touch();
+        Vec::new()
+    };
+    sync_messages(weak, id, rows);
+    sync_busy(weak, id, false);
 }
 
 /// 作废当前轮次：结清等待中的审批并让在飞的 ask() 放弃 UI 写入。
-pub(super) fn cancel_generation(ai: &AiTabHandle) -> u64 {
-    match ai.lock() {
-        Ok(mut g) => g.cancel_generation(),
-        Err(e) => e.into_inner().cancel_generation(),
+pub(super) fn cancel_generation(conversations: &ConversationStoreHandle, id: &str) -> u64 {
+    match conversations.lock() {
+        Ok(mut g) => g
+            .get_mut(id)
+            .map(|c| c.cancel_generation())
+            .unwrap_or_default(),
+        Err(e) => e
+            .into_inner()
+            .get_mut(id)
+            .map(|c| c.cancel_generation())
+            .unwrap_or_default(),
     }
 }
 
 /// 某张卡片的 gate 与命令：UI 据此决定「批准执行」还是「仅填入终端」。
-pub(super) fn card_info(ai: &AiTabHandle, card_id: &str) -> Option<(String, String)> {
-    let guard = ai.lock().ok()?;
+pub(super) fn card_info(
+    conversations: &ConversationStoreHandle,
+    id: &str,
+    card_id: &str,
+) -> Option<(String, String)> {
+    let guard = conversations.lock().ok()?;
     guard
+        .get(id)?
         .messages
         .iter()
         .find(|m| m.card_id == card_id)
         .map(|m| (m.gate.to_string(), m.cmd.to_string()))
 }
 
-pub(super) fn answer_approval(ai: &AiTabHandle, card_id: &str, ok: bool) -> bool {
-    match ai.lock() {
-        Ok(mut g) => g.answer_approval(card_id, ok),
-        Err(e) => e.into_inner().answer_approval(card_id, ok),
+pub(super) fn answer_approval(
+    conversations: &ConversationStoreHandle,
+    id: &str,
+    card_id: &str,
+    ok: bool,
+) -> bool {
+    match conversations.lock() {
+        Ok(mut g) => g
+            .get_mut(id)
+            .map(|c| c.answer_approval(card_id, ok))
+            .unwrap_or(false),
+        Err(e) => e
+            .into_inner()
+            .get_mut(id)
+            .map(|c| c.answer_approval(card_id, ok))
+            .unwrap_or(false),
     }
 }
 
-pub(super) fn is_busy(ai: &AiTabHandle) -> bool {
-    ai.lock().map(|g| g.is_busy()).unwrap_or(false)
-}
-
-/// 通过 tab 的投递路由取到它的 AI 上下文句柄。
-pub(super) fn ai_handle(core: &crate::app::AppCore, tab_id: &str) -> Option<AiTabHandle> {
+/// 通过 tab 的投递路由取到它的终端上下文句柄（命令块 + 执行锁）。
+pub(super) fn context_handle(core: &crate::app::AppCore, tab_id: &str) -> Option<TabContextHandle> {
     let routes = core.tab_routes.lock().ok()?;
     let route = routes.get(tab_id)?.clone();
-    route.lock().ok().map(|g| g.ai.clone())
-}
-
-/// 页面/窗口换了之后，把 Rust 侧持有的对话重刷进新的 Slint 模型。
-pub(super) fn resync_conversation(
-    core: &crate::app::AppCore,
-    weak: &slint::Weak<AppWindow>,
-    tab_id: &str,
-) {
-    let Some(ai) = ai_handle(core, tab_id) else {
-        return;
-    };
-    let rows = ai.lock().map(|g| g.messages.clone()).unwrap_or_default();
-    sync_messages(weak, tab_id, rows);
+    route.lock().ok().map(|g| g.context.clone())
 }
 
 // ─── ToolRuntime：AI 唯一的副作用出口 ─────────────────────────────
 
 pub(super) struct UiRuntime {
-    tab_id: String,
-    ai: AiTabHandle,
+    conversations: ConversationStoreHandle,
+    conversation_id: String,
     weak: slint::Weak<AppWindow>,
     /// 本轮中断开关：置位后命令等待立刻结束（用户点了「停止」）。
     cancel: Arc<AtomicBool>,
-    /// PTY 写通道。None = 这个标签没有可写入的终端（AI 只能聊天）。
+    /// PTY 写通道。None = 这个会话没有可写入的终端（AI 只能聊天）。
     raw: Option<UnboundedSender<SessionCommand>>,
-    /// 本次 ask() 的世代号；抽屉被清空 / 停止后其 UI 写入自动作废。
+    /// 锚点标签的终端上下文（命令块窗口 + sentinel 执行捕获 + 执行锁）。
+    context: Option<TabContextHandle>,
+    /// 本次 ask() 的世代号；会话被停止 / 清空后其 UI 写入自动作废。
     generation: u64,
     /// 标签对应的会话定义（可能缺失：本地/串口标签没有 SSH 会话）。
     session: Option<Session>,
@@ -606,11 +568,35 @@ impl UiRuntime {
     ///
     /// `execute_approved`（审批过的卡片）与 `execute_internal`（file_ops 远端
     /// 能力探测，无卡片）共用这一条路径 —— 两者都发生在用户可见的终端里。
+    ///
+    /// 同锚点串行化：整个「arm → 写 PTY → 等结果」期间持有标签的执行锁。
+    /// 拿不到锁就返回可识别的 `anchor_busy`，引擎按工具失败继续，第二个会话
+    /// 一个字节都不会写进 PTY。
     async fn run_with_sentinel(&self, cmd: &str, timeout: Duration) -> AppResult<CommandOutcome> {
+        let Some(context) = self.context.clone() else {
+            return Err(AppError::pty(
+                "anchor_lost",
+                serde_json::json!({"reason": "no_live_terminal"}),
+            ));
+        };
+        let lock = context
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .exec_lock();
+        // 持有到本轮执行结束（作用域末尾 drop），别在 await 期间丢锁。
+        let _exec_guard = match lock.try_lock() {
+            Ok(g) => g,
+            Err(_) => {
+                return Err(AppError::pty(
+                    "anchor_busy",
+                    serde_json::json!({"reason": "another_conversation_is_executing"}),
+                ))
+            }
+        };
         let marker = format!("{}{}", AI_SENTINEL_PREFIX, uuid::Uuid::new_v4().simple());
         let line = sentinel_wrap(cmd, self.shell, &marker);
         {
-            let mut guard = self.ai.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = context.lock().unwrap_or_else(|e| e.into_inner());
             guard.arm_exec(&marker);
         }
         self.send_line(&line)?;
@@ -619,7 +605,7 @@ impl UiRuntime {
             tokio::time::sleep(Duration::from_millis(80)).await;
             // 用户点了「停止」：不再等这条命令的结果。
             if self.cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                let mut guard = self.ai.lock().unwrap_or_else(|e| e.into_inner());
+                let mut guard = context.lock().unwrap_or_else(|e| e.into_inner());
                 guard.clear_exec();
                 return Ok(CommandOutcome {
                     exit_code: None,
@@ -628,7 +614,7 @@ impl UiRuntime {
                 });
             }
             let finished = {
-                self.ai
+                context
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .take_finished_exec()
@@ -641,7 +627,7 @@ impl UiRuntime {
                 });
             }
             if tokio::time::Instant::now() >= deadline {
-                let mut guard = self.ai.lock().unwrap_or_else(|e| e.into_inner());
+                let mut guard = context.lock().unwrap_or_else(|e| e.into_inner());
                 guard.clear_exec();
                 let partial = String::new();
                 return Ok(CommandOutcome {
@@ -659,21 +645,23 @@ impl ToolRuntime for UiRuntime {
     async fn request_approval(&self, p: &ProposedCommand) -> AppResult<bool> {
         let (tx, rx) = oneshot::channel();
         {
-            let mut guard = self.ai.lock().unwrap_or_else(|e| e.into_inner());
-            guard.set_approval(p.id.clone(), tx);
+            let mut guard = self.conversations.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(conv) = guard.get_mut(&self.conversation_id) else {
+                return Ok(false);
+            };
+            conv.set_approval(p.id.clone(), tx);
         }
         let card = message_card(p);
         with_messages(
-            &self.ai,
+            &self.conversations,
             &self.weak,
-            &self.tab_id,
+            &self.conversation_id,
             Some(self.generation),
             |v| upsert_card(v, card),
         );
         match tokio::time::timeout(APPROVAL_TIMEOUT, rx).await {
             Ok(Ok(ok)) => Ok(ok),
-            // 通道关闭（抽屉/会话已关）与超时的处置一致：按拒绝处理，
-            // AI 侧会收到拒绝并调整策略，用户的终端不会有任何动静。
+            // 通道关闭（会话被删 / 应用退出）与超时的处置一致：按拒绝处理。
             Ok(Err(_)) | Err(_) => Ok(false),
         }
     }
@@ -691,7 +679,7 @@ impl ToolRuntime for UiRuntime {
 
     /// file_ops 的远端能力探测（python3 / perl / diff）：不弹卡片，但仍然写在
     /// 用户可见的 PTY 里，与 rssh 的 internal_command 一致。等待上限由调用方
-    /// （引擎按探测命令的性质给定）传入，宿不再私自加码。
+    /// （引擎按探测命令的性质给定）传入，宿主不再私自加码。
     async fn execute_internal(&self, cmd: &str, timeout_s: u64) -> AppResult<CommandOutcome> {
         self.run_with_sentinel(cmd, Duration::from_secs(timeout_s))
             .await
@@ -728,13 +716,14 @@ impl ToolRuntime for UiRuntime {
 // ─── 一次 Triage ─────────────────────────────────────────────────
 
 pub(super) struct AskParams {
-    pub tab_id: String,
+    pub conversation_id: String,
     pub question: String,
     pub trigger: Trigger,
-    pub ai: AiTabHandle,
+    pub conversations: ConversationStoreHandle,
     pub weak: slint::Weak<AppWindow>,
     /// PTY 写通道；没有就说明会话尚未连上（此时 Triage 仍然可以纯聊天）。
     pub raw: Option<UnboundedSender<SessionCommand>>,
+    pub context: Option<TabContextHandle>,
     pub session: Option<Session>,
     pub jump: Vec<Session>,
     pub cfg: CopilotConfig,
@@ -746,12 +735,13 @@ pub(super) struct AskParams {
 /// 发起一轮 AI 诊断。返回后立即回到 UI：所有网络 / 工具执行都在 tokio 侧。
 pub(super) fn spawn_ask(runtime: &tokio::runtime::Handle, params: AskParams) {
     let AskParams {
-        tab_id,
+        conversation_id,
         question,
         trigger,
-        ai,
+        conversations,
         weak,
         raw,
+        context,
         session,
         jump,
         cfg,
@@ -759,35 +749,59 @@ pub(super) fn spawn_ask(runtime: &tokio::runtime::Handle, params: AskParams) {
         local,
     } = params;
 
-    // 先把用户提问与一条空的助手占位行压进抽屉，拿到流式更新的目标下标。
-    let mut stream_index = 0usize;
-    with_messages(&ai, &weak, &tab_id, None, |v| {
-        v.push(AiMessage {
+    // 先把用户提问与一条空的助手占位行压进会话，拿到流式更新的目标下标；
+    // 同一时刻给会话开新的一轮（拿中断开关），世代号随之确定。
+    let (generation, cancel, stream_index) = {
+        let mut guard = conversations.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(conv) = guard.get_mut(&conversation_id) else {
+            return;
+        };
+        let first_question = conv.messages.is_empty();
+        conv.messages.push(AiMessage {
             role: ROLE_USER,
             text: question.clone().into(),
             ..Default::default()
         });
-        v.push(AiMessage {
+        conv.messages.push(AiMessage {
             role: ROLE_ASSISTANT,
             ..Default::default()
         });
-        stream_index = v.len() - 1;
-    });
+        let stream_index = conv.messages.len() - 1;
+        if first_question {
+            conv.derive_title(&question);
+        }
+        let cancel = conv.begin_round();
+        let generation = conv.generation;
+        let rows = conv.messages.clone();
+        guard.touch();
+        drop(guard);
+        sync_messages(&weak, &conversation_id, rows);
+        (generation, cancel, stream_index)
+    };
+    // 锚点标签已经关了（或本来就没锚点）：会话照样能聊，但没有终端上下文。
+    if context.is_none() {
+        push_notice(
+            &conversations,
+            &weak,
+            &conversation_id,
+            ROLE_ERROR,
+            crate::i18n::t(
+                "这条会话没有可用的终端上下文，本轮只做纯文本分析。",
+                "This conversation has no live terminal context; this round is text-only.",
+            ),
+        );
+    }
 
-    let generation = ai.lock().map(|g| g.generation()).unwrap_or_default();
     // 审计日志的目标标识要在 session 移交给 UiRuntime 之前取（本地标签没有会话）。
     let audit_target = session.as_ref().map(|s| format!("ssh:{}", s.name));
-    let cancel = ai
-        .lock()
-        .map(|mut g| g.begin_round())
-        .unwrap_or_else(|_| Arc::new(AtomicBool::new(false)));
     let backend = Arc::new(UiRuntime {
-        tab_id: tab_id.clone(),
-        ai: ai.clone(),
+        conversations: conversations.clone(),
+        conversation_id: conversation_id.clone(),
         weak: weak.clone(),
-        raw,
-        generation,
         cancel: cancel.clone(),
+        raw,
+        context: context.clone(),
+        generation,
         session,
         jump,
         shell,
@@ -797,14 +811,21 @@ pub(super) fn spawn_ask(runtime: &tokio::runtime::Handle, params: AskParams) {
     {
         Ok(e) => e,
         Err(e) => {
-            push_notice(&ai, &weak, &tab_id, ROLE_ERROR, &format!("{e}"));
+            push_notice(
+                &conversations,
+                &weak,
+                &conversation_id,
+                ROLE_ERROR,
+                &format!("{e}"),
+            );
+            finish_round(&conversations, &conversation_id, generation);
             return;
         }
     };
 
-    let blocks = ai
-        .lock()
-        .map(|g| g.context_blocks(MAX_CONTEXT_BLOCKS))
+    let blocks = context
+        .as_ref()
+        .and_then(|c| c.lock().ok().map(|g| g.context_blocks(MAX_CONTEXT_BLOCKS)))
         .unwrap_or_default();
     let ctx = TriageContext {
         question,
@@ -816,72 +837,89 @@ pub(super) fn spawn_ask(runtime: &tokio::runtime::Handle, params: AskParams) {
     };
 
     let sink: ai_copilot::DeltaSink = Arc::new({
-        let ai = ai.clone();
+        let conversations = conversations.clone();
         let weak = weak.clone();
-        let tab_id = tab_id.clone();
-        move |delta| {
-            match delta {
-                ChatDelta::Text(text) => {
-                    with_messages(&ai, &weak, &tab_id, Some(generation), |v| {
+        let conversation_id = conversation_id.clone();
+        move |delta| match delta {
+            ChatDelta::Text(text) => {
+                with_messages(
+                    &conversations,
+                    &weak,
+                    &conversation_id,
+                    Some(generation),
+                    |v| {
                         if let Some(row) = v.get_mut(stream_index) {
                             row.text = format!("{}{}", row.text, text).into();
                             row.role = ROLE_ASSISTANT;
                         }
-                    });
-                }
-                // Agent 计划清单：整份快照替换，UI 看到的是实时进展。
-                ChatDelta::Plan(plan) => {
-                    with_messages(&ai, &weak, &tab_id, Some(generation), |v| {
-                        sync_plan_rows(v, &plan);
-                    });
-                }
-                _ => {}
+                    },
+                );
             }
+            // Agent 计划清单：整份快照替换，UI 看到的是实时进展。
+            ChatDelta::Plan(plan) => {
+                with_messages(
+                    &conversations,
+                    &weak,
+                    &conversation_id,
+                    Some(generation),
+                    |v| {
+                        sync_plan_rows(v, &plan);
+                    },
+                );
+            }
+            _ => {}
         }
     });
 
-    if let Ok(mut guard) = ai.lock() {
-        guard.set_busy(true);
-    }
-    sync_busy(&weak, &tab_id, true);
+    sync_busy(&weak, &conversation_id, true);
     runtime.spawn(async move {
         let result = engine.ask(&ctx, Some(sink)).await;
-        with_messages(&ai, &weak, &tab_id, Some(generation), |v| match result {
-            Ok(outcome) => {
-                // 最终结论覆盖流式拼接结果（模型可能重发整段）。
-                if let Some(row) = v.get_mut(stream_index) {
-                    row.text = outcome.text.clone().into();
-                    row.role = ROLE_ASSISTANT;
+        with_messages(
+            &conversations,
+            &weak,
+            &conversation_id,
+            Some(generation),
+            |v| match result {
+                Ok(outcome) => {
+                    // 最终结论覆盖流式拼接结果（模型可能重发整段）。
+                    if let Some(row) = v.get_mut(stream_index) {
+                        row.text = outcome.text.clone().into();
+                        row.role = ROLE_ASSISTANT;
+                    }
+                    // 收尾时用最终快照再刷一次，保证没有残留的「进行中」。
+                    sync_plan_rows(v, &outcome.plan);
+                    // Agent 模式：把取证/执行/验证的每一步都留在面板里，
+                    // 用户不必信任结论 —— 他能看到过程。
+                    for entry in &outcome.tool_log {
+                        v.push(message_step(entry));
+                    }
+                    for proposal in &outcome.proposed {
+                        upsert_card(v, message_card(proposal));
+                    }
                 }
-                // 收尾时用最终快照再刷一次，保证没有残留的「进行中」。
-                sync_plan_rows(v, &outcome.plan);
-                // Agent 模式：把取证/执行/验证的每一步都留在抽屉里，
-                // 用户不必信任结论 —— 他能看到过程。
-                for entry in &outcome.tool_log {
-                    v.push(message_step(entry));
+                Err(e) => {
+                    if let Some(row) = v.get_mut(stream_index) {
+                        row.text = format!("{e}").into();
+                        row.role = ROLE_ERROR;
+                    }
                 }
-                for proposal in &outcome.proposed {
-                    upsert_card(v, message_card(proposal));
-                }
-            }
-            Err(e) => {
-                if let Some(row) = v.get_mut(stream_index) {
-                    row.text = format!("{e}").into();
-                    row.role = ROLE_ERROR;
-                }
-            }
-        });
-        let clear_busy = {
-            let mut guard = ai.lock().unwrap_or_else(|e| e.into_inner());
-            if guard.generation() == generation {
-                guard.set_busy(false);
-            }
-            guard.generation() == generation
-        };
-        if clear_busy {
-            sync_busy(&weak, &tab_id, false);
+            },
+        );
+        if finish_round(&conversations, &conversation_id, generation) {
+            sync_busy(&weak, &conversation_id, false);
         }
     });
+}
+
+/// 一轮结束：世代没变才落回 idle（用户中途点了停止的轮次保持 interrupted）。
+fn finish_round(conversations: &ConversationStoreHandle, id: &str, generation: u64) -> bool {
+    let mut guard = conversations.lock().unwrap_or_else(|e| e.into_inner());
+    let done = guard
+        .get_mut(id)
+        .map(|c| c.finish_round(generation))
+        .unwrap_or(false);
+    guard.touch();
+    done
 }
 
 #[cfg(test)]
