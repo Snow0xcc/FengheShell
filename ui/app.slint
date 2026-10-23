@@ -28,7 +28,7 @@ import { ProcWindow, ProcRow } from "proc_window.slint";
 import { SystemInfoWindow, SysInfoRow, SysMetricRow, SysNetRow } from "system_info_window.slint";
 import { EditorWindow } from "editor_window.slint";
 import { EditorPane, EditorFindResult, EditorDoc } from "editor_pane.slint";
-import { InterfacePanel, OutputRuleItem, WslProfileInfo, CustomAgentInfo } from "interface_panel.slint";
+import { InterfacePanel, OutputRuleItem, WslProfileInfo, CustomAgentInfo, AiProfileRow, AiMemoryRow, AiSkillRow } from "interface_panel.slint";
 import { AiMessage, AiPanel, AiProfileInfo, ConversationInfo } from "ai_panel.slint";
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow, EditorWindow }
@@ -779,6 +779,42 @@ export component AppWindow inherits Window {
     in-out property <bool> mcp-allow-commands: true;
     in-out property <bool> mcp-allow-file-transfers: true;
     callback set-mcp-permissions(bool, bool, bool, bool);
+    // --- M2 设置面：模型配置 / 记忆 / 技能 / 并发（F2 F7 F8 D3）-------------
+    in-out property <[AiProfileRow]> ai-profiles: [];
+    in-out property <string> ai-profile-edit: "";
+    in-out property <string> ai-profile-name: "";
+    in-out property <string> ai-profile-protocol: "openai-completions";
+    in-out property <string> ai-profile-endpoint: "";
+    in-out property <string> ai-profile-model: "";
+    in-out property <string> ai-profile-key: "";
+    in-out property <bool> ai-profile-default: false;
+    in-out property <string> ai-profile-status: "";
+    callback ai-save-profile(string, string, string, string, string, string, bool);
+    callback ai-delete-profile(string);
+    callback ai-edit-profile(string);
+    callback ai-clear-profile-form();
+    in-out property <[AiMemoryRow]> ai-memories: [];
+    in-out property <string> ai-memory-edit: "";
+    in-out property <string> ai-memory-draft: "";
+    in-out property <string> ai-memory-status: "";
+    callback ai-save-memory(string, string);
+    callback ai-delete-memory(string);
+    callback ai-toggle-memory(string, bool);
+    callback ai-clear-memories();
+    callback ai-edit-memory(string);
+    in-out property <[AiSkillRow]> ai-skill-rows: [];
+    in-out property <string> ai-skill-edit: "";
+    in-out property <string> ai-skill-id: "";
+    in-out property <string> ai-skill-name: "";
+    in-out property <string> ai-skill-desc: "";
+    in-out property <string> ai-skill-content: "";
+    in-out property <string> ai-skill-status: "";
+    callback ai-save-skill(string, string, string, string, string);
+    callback ai-delete-skill(string);
+    callback ai-edit-skill(string);
+    callback ai-clear-skill-form();
+    callback set-ai-max-parallel(int);
+    callback open-mcp-docs();
     callback add-wsl-profile(string, string, string);
     callback remove-wsl-profile(string);
     callback pick-wsl-directory();
@@ -5144,6 +5180,42 @@ export component AppWindow inherits Window {
                         root.ai-apply-settings(p, e, m, k, r, a);
                     }
                     ai-export-audit() => { root.ai-export-audit(); }
+                    ai-profiles: root.ai-profiles;
+                    ai-profile-edit <=> root.ai-profile-edit;
+                    ai-profile-name <=> root.ai-profile-name;
+                    ai-profile-protocol <=> root.ai-profile-protocol;
+                    ai-profile-endpoint <=> root.ai-profile-endpoint;
+                    ai-profile-model <=> root.ai-profile-model;
+                    ai-profile-key <=> root.ai-profile-key;
+                    ai-profile-default <=> root.ai-profile-default;
+                    ai-profile-status <=> root.ai-profile-status;
+                    ai-save-profile(e, n, p, u, m, k, d) => { root.ai-save-profile(e, n, p, u, m, k, d); }
+                    ai-delete-profile(n) => { root.ai-delete-profile(n); }
+                    ai-edit-profile(n) => { root.ai-edit-profile(n); }
+                    ai-clear-profile-form() => { root.ai-clear-profile-form(); }
+                    ai-memories: root.ai-memories;
+                    ai-memory-edit <=> root.ai-memory-edit;
+                    ai-memory-draft <=> root.ai-memory-draft;
+                    ai-memory-status <=> root.ai-memory-status;
+                    ai-save-memory(id, c) => { root.ai-save-memory(id, c); }
+                    ai-delete-memory(id) => { root.ai-delete-memory(id); }
+                    ai-toggle-memory(id, on) => { root.ai-toggle-memory(id, on); }
+                    ai-clear-memories() => { root.ai-clear-memories(); }
+                    ai-edit-memory(id) => { root.ai-edit-memory(id); }
+                    ai-skill-rows: root.ai-skill-rows;
+                    ai-skill-edit <=> root.ai-skill-edit;
+                    ai-skill-id <=> root.ai-skill-id;
+                    ai-skill-name <=> root.ai-skill-name;
+                    ai-skill-desc <=> root.ai-skill-desc;
+                    ai-skill-content <=> root.ai-skill-content;
+                    ai-skill-status <=> root.ai-skill-status;
+                    ai-save-skill(e, id, n, d, c) => { root.ai-save-skill(e, id, n, d, c); }
+                    ai-delete-skill(id) => { root.ai-delete-skill(id); }
+                    ai-edit-skill(id) => { root.ai-edit-skill(id); }
+                    ai-clear-skill-form() => { root.ai-clear-skill-form(); }
+                    ai-max-parallel: root.ai-max-parallel;
+                    set-ai-max-parallel(n) => { root.set-ai-max-parallel(n); }
+                    open-mcp-docs() => { root.open-mcp-docs(); }
                     webdav-enabled <=> root.webdav-enabled;
                     webdav-url <=> root.webdav-url;
                     webdav-username <=> root.webdav-username;

@@ -477,6 +477,7 @@ pub(super) fn open_window(
     // AI Copilot drawer (#ai-copilot): needs the tab models to exist, so it is
     // wired after the pane models are seeded.
     wire_ai(&ctx);
+    wire_ai_m2(&ctx);
 
     // Per-tab connection status + remote resources, the latest local sample,
     // and the local machine's network history (bottom sparkline).

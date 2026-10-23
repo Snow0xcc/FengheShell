@@ -513,7 +513,12 @@ fn ask_question(
         .unwrap_or((None, Vec::new()));
     let shell = shell_kind(session.as_ref());
     // 会话级模型（F2）与记忆开关（F7）：都按会话自己的快照来，不看全局默认。
-    let mut cfg = ai_config(&store, shell, model_ref.as_deref(), conversation_memories(&store, memory_enabled));
+    let mut cfg = ai_config(
+        &store,
+        shell,
+        model_ref.as_deref(),
+        conversation_memories(&store, memory_enabled),
+    );
     // 会话级模式（F3）：这一轮按会话自己的 ask/agent 跑，不看全局默认。
     cfg.mode = mode;
     let local = local_snapshot(core);
@@ -845,9 +850,8 @@ pub(super) fn wire_ai(ctx: &WinCtx) {
             }
             let id = win.get_ai_active_id().to_string();
             if let Ok(mut convs) = core.conversations.lock() {
-                if let Some(conv) = convs.get_mut(&id) {
-                    conv.mode = parsed;
-                    conv.updated_at = chrono::Utc::now();
+                if !convs.set_mode(&id, parsed) {
+                    // 还没有会话（面板空态）：只改默认模式，等会话建好再锁进来。
                 }
                 convs.touch();
             }

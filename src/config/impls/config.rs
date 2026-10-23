@@ -1815,12 +1815,8 @@ impl ConfigStore {
     ) -> Result<String> {
         let existing = self.ai_memory();
         let editing = (!id.trim().is_empty()).then(|| id.trim().to_string());
-        let content = ai_copilot::memory::validate_content(
-            content,
-            &existing,
-            editing.as_deref(),
-        )
-        .map_err(anyhow::Error::msg)?;
+        let content = ai_copilot::memory::validate_content(content, &existing, editing.as_deref())
+            .map_err(anyhow::Error::msg)?;
         if existing.len() >= ai_copilot::memory::MAX_MEMORIES && editing.is_none() {
             anyhow::bail!(
                 "memory limit reached ({} entries)",

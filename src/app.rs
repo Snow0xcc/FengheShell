@@ -8,6 +8,7 @@
 mod agents;
 mod ai;
 mod ai_callbacks;
+mod ai_m2;
 pub(crate) mod ai_store;
 mod auth_dialogs;
 mod aux_windows;
@@ -55,6 +56,7 @@ mod window_events;
 
 use self::ai::*;
 use self::ai_callbacks::*;
+use self::ai_m2::*;
 use self::auth_dialogs::*;
 use self::aux_windows::*;
 use self::dock_stacks::*;

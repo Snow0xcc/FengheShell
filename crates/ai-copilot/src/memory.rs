@@ -156,8 +156,14 @@ mod tests {
     #[test]
     fn memory_is_redacted_before_it_leaves_the_machine() {
         let redactor = IndexedRedactor::builtin();
-        let section = render_section(&[mem("跳板机是 10.1.2.3，密钥 sk-abcdefghijklmnopqrstuvwx")], Some(&redactor));
-        assert!(!section.contains("10.1.2.3"), "private IP leaked: {section}");
+        let section = render_section(
+            &[mem("跳板机是 10.1.2.3，密钥 sk-abcdefghijklmnopqrstuvwx")],
+            Some(&redactor),
+        );
+        assert!(
+            !section.contains("10.1.2.3"),
+            "private IP leaked: {section}"
+        );
         assert!(!section.contains("sk-abcdefghijklmnopqrstuvwx"));
         assert!(section.contains("<INTERNAL_IP_1>"));
     }

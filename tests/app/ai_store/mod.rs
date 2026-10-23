@@ -314,7 +314,10 @@ fn search_matches_titles_and_message_bodies() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].id, b);
     // 空前缀 = 全部。
-    assert_eq!(search_summaries(&store, "", None, |t| t.to_string()).len(), 2);
+    assert_eq!(
+        search_summaries(&store, "", None, |t| t.to_string()).len(),
+        2
+    );
     // 状态过滤。
     let hits = search_summaries(&store, "", Some("interrupted"), |t| t.to_string());
     assert!(hits.is_empty());
