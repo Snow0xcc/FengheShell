@@ -2394,6 +2394,153 @@ mod tests {
     }
 
     #[test]
+    fn model_profiles_keep_one_default_and_encrypt_their_keys() {
+        let mut store = temp_store();
+        let path = store.path.clone();
+        // 空表时回落到单份设置，名字固定。
+        store.set_ai_settings(
+            "openai-completions".into(),
+            "https://api.openai.com/v1".into(),
+            "gpt-4o-mini".into(),
+            "sk-legacy".into(),
+            true,
+            false,
+        );
+        let fallback = store.ai_default_profile();
+        assert_eq!(fallback.name, DEFAULT_PROFILE_NAME);
+        assert_eq!(fallback.api_key.as_str(), "sk-legacy");
+
+        store
+            .upsert_ai_model_profile(AiModelProfileSpec {
+                name: "deepseek".into(),
+                protocol: "deepseek-thinking".into(),
+                endpoint: "https://api.deepseek.com".into(),
+                model: "deepseek-chat".into(),
+                api_key: Secret::new("sk-deepseek"),
+                default: true,
+            })
+            .unwrap();
+        store
+            .upsert_ai_model_profile(AiModelProfileSpec {
+                name: "local".into(),
+                protocol: "ollama".into(),
+                endpoint: "http://localhost:11434/v1".into(),
+                model: "qwen2.5-coder:7b".into(),
+                api_key: Secret::new(String::new()),
+                default: false,
+            })
+            .unwrap();
+        assert_eq!(store.ai_default_profile().name, "deepseek");
+        assert_eq!(
+            store.ai_profile_by_name("local").unwrap().model,
+            "qwen2.5-coder:7b"
+        );
+
+        // 切默认必须唯一。
+        store
+            .upsert_ai_model_profile(AiModelProfileSpec {
+                name: "local".into(),
+                protocol: "ollama".into(),
+                endpoint: "http://localhost:11434/v1".into(),
+                model: "qwen2.5-coder:7b".into(),
+                api_key: Secret::new(String::new()),
+                default: true,
+            })
+            .unwrap();
+        let profiles = store.ai_model_profiles();
+        assert_eq!(profiles.iter().filter(|p| p.default).count(), 1);
+        assert_eq!(store.ai_default_profile().name, "local");
+        // 空 Key 的二次保存不会清掉已存的密钥。
+        assert_eq!(
+            store
+                .ai_profile_by_name("deepseek")
+                .unwrap()
+                .api_key
+                .as_str(),
+            "sk-deepseek"
+        );
+
+        store.save().expect("save");
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !raw.contains("sk-deepseek"),
+            "profile key must be encrypted"
+        );
+        assert!(raw.contains("ai_model_profiles"));
+
+        // 删掉默认项：剩下的第一份顶上。
+        assert!(store.remove_ai_model_profile("local"));
+        assert_eq!(store.ai_default_profile().name, "deepseek");
+        assert!(store.remove_ai_model_profile("deepseek"));
+        assert_eq!(store.ai_default_profile().name, DEFAULT_PROFILE_NAME);
+        assert!(!store.remove_ai_model_profile("nope"));
+    }
+
+    #[test]
+    fn memory_entries_are_validated_and_toggleable() {
+        let mut store = temp_store();
+        let id = store
+            .upsert_ai_memory("", "生产集群禁执行 kubectl delete", "manual", true)
+            .expect("first memory");
+        assert_eq!(store.ai_active_memory().len(), 1);
+        // 重复内容被拒。
+        assert!(store
+            .upsert_ai_memory("", "生产集群禁执行 kubectl delete", "manual", true)
+            .is_err());
+        // 空内容被拒。
+        assert!(store.upsert_ai_memory("", "   ", "manual", true).is_err());
+        // 停用后不进注入列表，但列表里还在。
+        assert!(store
+            .upsert_ai_memory(&id, "生产集群禁执行 kubectl delete", "manual", false)
+            .is_ok());
+        assert!(store.ai_active_memory().is_empty());
+        assert_eq!(store.ai_memory().len(), 1);
+        // AI 提议来源。
+        let proposed = store
+            .upsert_ai_memory("", "日志默认在 /var/log/nginx", "ai-proposed", true)
+            .unwrap();
+        assert_eq!(
+            store
+                .ai_memory()
+                .into_iter()
+                .find(|m| m.id == proposed)
+                .unwrap()
+                .source,
+            ai_copilot::memory::MemorySource::AiProposed
+        );
+        assert!(store.remove_ai_memory(&id));
+        store.clear_ai_memory();
+        assert!(store.ai_memory().is_empty());
+    }
+
+    #[test]
+    fn skills_save_rejects_builtin_and_duplicate_ids() {
+        let mut store = temp_store();
+        let kept = store.set_ai_skills(vec![
+            (
+                "user-mysql".into(),
+                "MySQL".into(),
+                "慢查询".into(),
+                "show full processlist".into(),
+            ),
+            // 内置 id、空内容、重复 id 都要被丢掉。
+            ("general".into(), "General".into(), "".into(), "nope".into()),
+            ("empty".into(), "Empty".into(), "".into(), "".into()),
+            (
+                "user-mysql".into(),
+                "dupe".into(),
+                "".into(),
+                "dup content".into(),
+            ),
+        ]);
+        assert_eq!(kept, 1);
+        let skills = store.ai_skills();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "user-mysql");
+        assert_eq!(skills[0].description, "慢查询");
+    }
+
+    #[test]
     fn ai_yolo_mode_defaults_off_and_toggles() {
         let mut store = temp_store();
         // 完全信任模式必须默认关闭，只能由用户显式开启。

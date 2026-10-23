@@ -841,9 +841,9 @@ pub fn export_markdown(conv: &Conversation, redactor: &IndexedRedactor) -> Strin
     if let Some(model) = &conv.model_ref {
         out.push_str(&format!("- Model: {}\n", clean(model)));
     }
-    out.push_str(&format!(
-        "\n> Exported from FengheShell. Secrets matching the local redaction rules are replaced with placeholders; treat this file as sensitive.\n\n"
-    ));
+    out.push_str(
+        "\n> Exported from FengheShell. Secrets matching the local redaction rules are replaced with placeholders; treat this file as sensitive.\n\n",
+    );
     for m in &conv.messages {
         match m.role {
             crate::app::ai::ROLE_USER => {

@@ -2118,6 +2118,66 @@ mod tests {
         }
     }
 
+    #[test]
+    fn system_prompt_carries_user_memory_and_skills() {
+        let rt = Arc::new(MockRuntime::default());
+        let mut eng = engine(vec![resp_final("ok")], rt);
+        eng.cfg.memories = vec![crate::memory::MemoryRecord::new(
+            "m1",
+            "生产集群禁执行 kubectl delete",
+            crate::memory::MemorySource::Manual,
+        )];
+        eng.cfg.skills = vec![crate::skills::SkillRecord {
+            id: "user-mysql".into(),
+            name: "MySQL".into(),
+            description: "慢查询".into(),
+            content: "show full processlist".into(),
+            builtin: false,
+        }];
+        let ctx = TriageContext {
+            question: "为什么慢".into(),
+            blocks: Vec::new(),
+            system: None,
+            shell: ShellKind::default(),
+            trigger: Trigger::User,
+            target: None,
+        };
+        let prompt = eng.build_system_prompt(&ctx);
+        assert!(prompt.contains("User memory"));
+        assert!(prompt.contains("生产集群禁执行 kubectl delete"));
+        assert!(prompt.contains("user-mysql"));
+        // 记忆里的敏感值也过脱敏。
+        eng.cfg.memories = vec![crate::memory::MemoryRecord::new(
+            "m2",
+            "跳板机 10.1.2.3",
+            crate::memory::MemorySource::Manual,
+        )];
+        let prompt = eng.build_system_prompt(&ctx);
+        assert!(!prompt.contains("10.1.2.3"), "private IP leaked: {prompt}");
+    }
+
+    #[test]
+    fn disabled_memory_is_not_injected() {
+        let rt = Arc::new(MockRuntime::default());
+        let mut eng = engine(vec![resp_final("ok")], rt);
+        let mut m = crate::memory::MemoryRecord::new(
+            "m1",
+            "别动生产库",
+            crate::memory::MemorySource::Manual,
+        );
+        m.enabled = false;
+        eng.cfg.memories = vec![m];
+        let ctx = TriageContext {
+            question: "q".into(),
+            blocks: Vec::new(),
+            system: None,
+            shell: ShellKind::default(),
+            trigger: Trigger::User,
+            target: None,
+        };
+        assert!(!eng.build_system_prompt(&ctx).contains("User memory"));
+    }
+
     #[tokio::test]
     async fn agent_plan_is_published_and_advances_with_each_step() {
         use std::sync::Mutex;
