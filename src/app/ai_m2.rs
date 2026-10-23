@@ -20,6 +20,25 @@ fn memory_date(rfc3339: &str) -> String {
         .unwrap_or_default()
 }
 
+/// 设置页 MCP 区底部的状态行：配置文件位置 + 启动方式。
+///
+/// 只读描述，不做连通性探测 —— 探测要么起子进程要么写临时文件，
+/// 为一个展示行付这个代价不值。
+fn mcp_status_line() -> String {
+    let config = crate::config::data_dir().join("sessions.json");
+    if crate::i18n::is_en() {
+        format!(
+            "Command: fengheshell mcp serve\nTransport: stdio (local process only)\nSettings: {}",
+            config.display()
+        )
+    } else {
+        format!(
+            "启动命令：fengheshell mcp serve\n传输方式：stdio（仅本机进程）\n配置位置：{}",
+            config.display()
+        )
+    }
+}
+
 /// 设置页的模型列表（新建/编辑/删除后都要刷一遍）。
 fn refresh_profile_rows(store: &Rc<RefCell<ConfigStore>>, win: &AppWindow) {
     let s = store.borrow();
@@ -523,6 +542,14 @@ pub(super) fn wire_ai_m2(ctx: &WinCtx) {
             }
             for_each_window(&core, |w| w.set_ai_max_parallel(clamped));
         });
+    }
+
+    // --- MCP 状态展示（F9-P1）--------------------------------------------
+    // 只描述「配置在哪、怎么启动」，不探测进程：真实连通性由客户端侧验证，
+    // 设置页只需要让人确认自己的开关落在了哪个文件上。
+    {
+        let status: SharedString = mcp_status_line().into();
+        for_each_window(&core, |w| w.set_mcp_status(status.clone()));
     }
 
     // --- MCP 文档入口（F9-P1）--------------------------------------------

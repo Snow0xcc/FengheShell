@@ -2338,6 +2338,15 @@ mod tests {
     }
 
     #[test]
+    fn data_dir_is_absolute_so_the_ui_can_show_it() {
+        // 设置页会把这个路径直接显示给用户（MCP 配置位置那一行），
+        // 相对路径在便携模式下会变成一句猜谜。
+        let dir = data_dir();
+        assert!(dir.is_absolute(), "data dir must be absolute: {dir:?}");
+        assert!(!dir.as_os_str().is_empty());
+    }
+
+    #[test]
     fn completion_toggle_round_trips_and_defaults_to_on() {
         let mut store = temp_store();
         // 默认开启。

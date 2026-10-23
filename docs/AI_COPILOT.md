@@ -264,8 +264,9 @@ shape validator 拦下），唯一通路是 rssh 同款的两步工具（Agent �
 `general` 规则集（诊断方法论 + Java/Go 剧本）永远展开在 system prompt 里。用户还
 可以把**自己的排查流程**写成 Skill，按需加载：
 
-在 `sessions.json` 里加 `ai_skills` 数组（没有管理 UI，直接编辑配置文件；`id` 不能
-是 `general`）：
+在 设置 → Interface → **技能** 页增删改查（M2 起有管理界面，不再手改配置；`id` 不能
+是 `general`，内容上限 8 KB）。表单保存即写 `sessions.json` 的 `ai_skills`，
+下一轮生效。字段形状大致是：
 
 ```json
 "ai_skills": [
@@ -302,7 +303,7 @@ shape validator 拦下），唯一通路是 rssh 同款的两步工具（Agent �
 - match_file / patch_file 只支持 POSIX shell（bash/zsh）的远端，且需要 python3 或 perl
   （patch_file 另需 diff）；Windows / 串口 / Telnet 会话会拿到明确错误，应改用
   run_command 的 grep / head 只读查看。
-- 用户自定义 Skill 目前只能手改 `sessions.json` 的 `ai_skills` 字段，没有管理界面。
+- 用户自定义 Skill 有管理界面（设置 → Interface → 技能），但没有技能市场 / 导入 URL / 版本管理。
 - web_search 的查询脱敏目前只走内置 8 条规则（内网 IP / Token / 密钥），用户自定义
   脱敏规则暂不参与；需要时可以经引擎透传。
 - 审计日志只在进程内存里累积，不自动落盘；退出即清空，需要留痕请用设置页的导出按钮。
