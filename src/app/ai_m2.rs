@@ -135,6 +135,7 @@ pub(super) fn wire_ai_m2(ctx: &WinCtx) {
     refresh_memory_rows(store, window);
     refresh_skill_rows(store, window);
     window.set_ai_max_parallel(store.borrow().ai_max_parallel() as i32);
+    window.set_mcp_status(mcp_status_line().into());
     sync_model_choice(core, store);
 
     // --- 模型配置 ---------------------------------------------------------
@@ -542,14 +543,6 @@ pub(super) fn wire_ai_m2(ctx: &WinCtx) {
             }
             for_each_window(&core, |w| w.set_ai_max_parallel(clamped));
         });
-    }
-
-    // --- MCP 状态展示（F9-P1）--------------------------------------------
-    // 只描述「配置在哪、怎么启动」，不探测进程：真实连通性由客户端侧验证，
-    // 设置页只需要让人确认自己的开关落在了哪个文件上。
-    {
-        let status: SharedString = mcp_status_line().into();
-        for_each_window(&core, |w| w.set_mcp_status(status.clone()));
     }
 
     // --- MCP 文档入口（F9-P1）--------------------------------------------
