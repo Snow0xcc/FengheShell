@@ -32,6 +32,7 @@ pub mod completion;
 pub mod error;
 pub mod file_ops;
 pub mod llm;
+pub mod memory;
 pub mod redact;
 pub mod risk;
 pub mod sanitize;

@@ -500,6 +500,11 @@ impl ConfigStore {
         if let Some(plain) = Self::try_decrypt(key, cfg.ai_api_key.as_str()) {
             cfg.ai_api_key = Secret::new(plain);
         }
+        for profile in &mut cfg.ai_model_profiles {
+            if let Some(plain) = Self::try_decrypt(key, profile.api_key.as_str()) {
+                profile.api_key = Secret::new(plain);
+            }
+        }
     }
 
     // ── Key file management ───────────────────────────────────────────────
@@ -1677,6 +1682,185 @@ impl ConfigStore {
             .collect()
     }
 
+    // --- 模型配置（F2）---------------------------------------------------
+
+    /// 全部模型配置。空表表示「还没建过多配置」，此时调用方应回落到单份
+    /// `ai_protocol / ai_endpoint / ai_model / ai_api_key`。
+    pub fn ai_model_profiles(&self) -> Vec<AiModelProfileSpec> {
+        self.cache.ai_model_profiles.clone()
+    }
+
+    /// 默认模型配置：显式标了 `default` 的第一份；没有标记就取第一份；
+    /// 一份都没有时回落到单份设置（名字固定为 `DEFAULT_PROFILE_NAME`）。
+    pub fn ai_default_profile(&self) -> AiModelProfileSpec {
+        let profiles = &self.cache.ai_model_profiles;
+        if let Some(p) = profiles.iter().find(|p| p.default) {
+            return p.clone();
+        }
+        if let Some(p) = profiles.first() {
+            return p.clone();
+        }
+        AiModelProfileSpec {
+            name: DEFAULT_PROFILE_NAME.to_string(),
+            protocol: self.ai_protocol().to_string(),
+            endpoint: self.ai_endpoint().to_string(),
+            model: self.ai_model().to_string(),
+            api_key: self.cache.ai_api_key.clone(),
+            default: true,
+        }
+    }
+
+    /// 按名字取一份模型配置（会话按创建时的 `model_ref` 解析）。
+    /// 找不到就回落到默认 —— 配置被删了不该让会话彻底没法提问，
+    /// 但调用方可以先用 [`Self::ai_model_profile`] 判断是否回落。
+    pub fn ai_profile_by_name(&self, name: &str) -> Option<AiModelProfileSpec> {
+        self.cache
+            .ai_model_profiles
+            .iter()
+            .find(|p| p.name == name)
+            .cloned()
+    }
+
+    /// 新增或替换一份模型配置（按 `name` 去重；`default` 唯一）。
+    /// 名字为空直接拒；`api_key` 为空串表示沿用旧密钥。
+    pub fn upsert_ai_model_profile(&mut self, mut spec: AiModelProfileSpec) -> Result<()> {
+        spec.name = spec.name.trim().to_string();
+        if spec.name.is_empty() {
+            anyhow::bail!("model profile name must not be empty");
+        }
+        spec.protocol = if spec.protocol.trim().is_empty() {
+            "openai-completions".to_string()
+        } else {
+            spec.protocol.trim().to_string()
+        };
+        spec.endpoint = spec.endpoint.trim().to_string();
+        spec.model = spec.model.trim().to_string();
+        let keep_key = spec.api_key.is_empty();
+        match self
+            .cache
+            .ai_model_profiles
+            .iter_mut()
+            .find(|p| p.name == spec.name)
+        {
+            Some(existing) => {
+                if keep_key {
+                    spec.api_key = existing.api_key.clone();
+                }
+                *existing = spec.clone();
+            }
+            None => self.cache.ai_model_profiles.push(spec.clone()),
+        }
+        if spec.default {
+            for p in self.cache.ai_model_profiles.iter_mut() {
+                if p.name != spec.name {
+                    p.default = false;
+                }
+            }
+        }
+        // 至少留一份默认：用户把唯一的默认取消勾选时，第一份顶上。
+        if !self.cache.ai_model_profiles.iter().any(|p| p.default) {
+            if let Some(first) = self.cache.ai_model_profiles.first_mut() {
+                first.default = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// 删除一份模型配置。默认项被删后由第一份接任默认。
+    pub fn remove_ai_model_profile(&mut self, name: &str) -> bool {
+        let before = self.cache.ai_model_profiles.len();
+        self.cache.ai_model_profiles.retain(|p| p.name != name);
+        if self.cache.ai_model_profiles.len() == before {
+            return false;
+        }
+        if !self.cache.ai_model_profiles.iter().any(|p| p.default) {
+            if let Some(first) = self.cache.ai_model_profiles.first_mut() {
+                first.default = true;
+            }
+        }
+        true
+    }
+
+    // --- 记忆（F7）---------------------------------------------------------
+
+    /// 全部记忆（含停用的）。内容不做任何过滤 —— UI 要能把坏的展示出来。
+    pub fn ai_memory(&self) -> Vec<ai_copilot::memory::MemoryRecord> {
+        self.cache
+            .ai_memory
+            .iter()
+            .filter(|m| !m.content.trim().is_empty())
+            .map(|m| ai_copilot::memory::MemoryRecord {
+                id: m.id.clone(),
+                content: m.content.clone(),
+                source: ai_copilot::memory::MemorySource::parse(&m.source),
+                enabled: m.enabled,
+                created_at: m.created_at.clone(),
+            })
+            .collect()
+    }
+
+    /// 只有开着的那部分，按注入顺序返回（宿主直接塞进 `CopilotConfig`）。
+    pub fn ai_active_memory(&self) -> Vec<ai_copilot::memory::MemoryRecord> {
+        self.ai_memory().into_iter().filter(|m| m.enabled).collect()
+    }
+
+    /// 新增或更新一条记忆。内容要过 [`ai_copilot::memory::validate_content`]
+    /// （非空、不重复、单条上限）。id 为空视为新增。
+    pub fn upsert_ai_memory(
+        &mut self,
+        id: &str,
+        content: &str,
+        source: &str,
+        enabled: bool,
+    ) -> Result<String> {
+        let existing = self.ai_memory();
+        let editing = (!id.trim().is_empty()).then(|| id.trim().to_string());
+        let content = ai_copilot::memory::validate_content(
+            content,
+            &existing,
+            editing.as_deref(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        if existing.len() >= ai_copilot::memory::MAX_MEMORIES && editing.is_none() {
+            anyhow::bail!(
+                "memory limit reached ({} entries)",
+                ai_copilot::memory::MAX_MEMORIES
+            );
+        }
+        let target = match editing {
+            Some(id) => id,
+            None => uuid::Uuid::new_v4().simple().to_string(),
+        };
+        let record = AiMemorySpec {
+            id: target.clone(),
+            content,
+            source: ai_copilot::memory::MemorySource::parse(source)
+                .as_str()
+                .to_string(),
+            enabled,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        match self.cache.ai_memory.iter_mut().find(|m| m.id == target) {
+            Some(slot) => {
+                // 编辑不改写入时间，只改内容与开关。
+                record.created_at.clone_into(&mut slot.created_at);
+                *slot = record;
+            }
+            None => self.cache.ai_memory.push(record),
+        }
+        Ok(target)
+    }
+
+    pub fn remove_ai_memory(&mut self, id: &str) -> bool {
+        let before = self.cache.ai_memory.len();
+        self.cache.ai_memory.retain(|m| m.id != id);
+        self.cache.ai_memory.len() != before
+    }
+
+    pub fn clear_ai_memory(&mut self) {
+        self.cache.ai_memory.clear();
+    }
+
     /// 同时运行的 AI 会话上限（默认 3，钳制在 1..=5）。
     pub fn ai_max_parallel(&self) -> usize {
         match self.cache.ai_max_parallel {
@@ -1944,6 +2128,12 @@ impl ConfigStore {
         if !disk.ai_api_key.is_empty() && !disk.ai_api_key.is_local_ciphertext() {
             let enc = Self::encrypt(&self.key, disk.ai_api_key.as_str())?;
             disk.ai_api_key = Secret::new(enc);
+        }
+        for profile in &mut disk.ai_model_profiles {
+            if !profile.api_key.is_empty() && !profile.api_key.is_local_ciphertext() {
+                let enc = Self::encrypt(&self.key, profile.api_key.as_str())?;
+                profile.api_key = Secret::new(enc);
+            }
         }
         let raw = serde_json::to_string_pretty(&disk)?;
         // Write to a sibling temp file then rename — cheap atomicity.

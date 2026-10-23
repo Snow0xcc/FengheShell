@@ -170,6 +170,9 @@ pub struct CopilotConfig {
     /// 用户自定义 Skill（`general` 内置，不在这里）。宿主从配置快照进来，
     /// 空 Vec = 不暴露 `load_skill`、system prompt 不带目录段。
     pub skills: Vec<SkillRecord>,
+    /// 用户显式保存的记忆（F7）。宿主按会话开关决定是否填这个字段：
+    /// 空 Vec = 不注入「User memory」段落。
+    pub memories: Vec<crate::memory::MemoryRecord>,
 }
 
 impl Default for CopilotConfig {
@@ -186,6 +189,7 @@ impl Default for CopilotConfig {
             locale: "zh-CN".into(),
             mode: CopilotMode::default(),
             skills: Vec::new(),
+            memories: Vec::new(),
         }
     }
 }
@@ -843,6 +847,13 @@ impl TriageEngine {
         }
         // 用户自定义 Skill 目录（没有用户 Skill 时是空串）。
         s.push_str(&skills::catalog_section(&self.cfg.skills));
+        // 用户显式保存的记忆（F7）：关闭脱敏时不额外处理，否则每条先过规则。
+        let redactor = self
+            .cfg
+            .redaction_enabled
+            .then_some(&self.redactor)
+            .filter(|_| !self.cfg.yolo);
+        s.push_str(&crate::memory::render_section(&self.cfg.memories, redactor));
         s
     }
 

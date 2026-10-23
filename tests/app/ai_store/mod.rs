@@ -72,6 +72,8 @@ fn running_and_pending_are_neutralised_on_load() {
             anchor_tab: Some("tab-1".into()),
             anchor_lost: false,
             mode: "ask".into(),
+            model_ref: None,
+            memory_enabled: true,
             status: "running".into(),
             created_at: None,
             updated_at: None,
@@ -259,4 +261,95 @@ fn save_without_a_path_is_a_no_op() {
     store
         .save(None)
         .expect("in-memory stores never touch the disk");
+}
+
+// --- F2 / F3 / F7：会话级模型、模式、记忆开关 --------------------------------
+
+#[test]
+fn model_ref_mode_and_memory_survive_a_round_trip() {
+    let path = tmp_path("session-fields");
+    let _ = std::fs::remove_file(&path);
+    let mut store = ConversationStore::with_path(Some(path.clone()));
+    let id = store.create(None, CopilotMode::Ask, "会话".into());
+    assert!(store.set_model_ref(&id, Some("deepseek-chat".into())));
+    assert!(store.set_mode(&id, CopilotMode::Agent));
+    assert!(store.set_memory_enabled(&id, false));
+    store.save(None).unwrap();
+
+    let mut restored = ConversationStore::with_path(Some(path.clone()));
+    restored.load(None);
+    let conv = restored.get(&id).unwrap();
+    assert_eq!(conv.model_ref.as_deref(), Some("deepseek-chat"));
+    assert_eq!(conv.mode, CopilotMode::Agent);
+    assert!(!conv.memory_enabled);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn rename_rejects_an_empty_title() {
+    let mut store = ConversationStore::in_memory();
+    let id = store.create(None, CopilotMode::Ask, UNTITLED_TITLE.into());
+    assert!(!store.rename(&id, "   "));
+    assert!(store.rename(&id, "  nginx 502  "));
+    assert_eq!(store.get(&id).unwrap().title, "nginx 502");
+}
+
+// --- F6：历史检索与脱敏导出 --------------------------------------------------
+
+#[test]
+fn search_matches_titles_and_message_bodies() {
+    let mut store = ConversationStore::in_memory();
+    let a = store.create(None, CopilotMode::Ask, "nginx 502 排查".into());
+    let b = store.create(None, CopilotMode::Ask, "磁盘占满".into());
+    store
+        .get_mut(&b)
+        .unwrap()
+        .messages
+        .push(msg(ROLE_USER, "upstream sent too big header, 502 again"));
+    // 标题命中。
+    let hits = search_summaries(&store, "502", None, |t| t.to_string());
+    assert_eq!(hits.len(), 2);
+    // 只有正文命中。
+    let hits = search_summaries(&store, "upstream", None, |t| t.to_string());
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, b);
+    // 空前缀 = 全部。
+    assert_eq!(search_summaries(&store, "", None, |t| t.to_string()).len(), 2);
+    // 状态过滤。
+    let hits = search_summaries(&store, "", Some("interrupted"), |t| t.to_string());
+    assert!(hits.is_empty());
+    let _ = a;
+}
+
+#[test]
+fn exported_markdown_is_redacted_and_keeps_the_cards() {
+    let mut store = ConversationStore::in_memory();
+    let id = store.create(None, CopilotMode::Agent, "10.1.2.3 上的 502".into());
+    {
+        let conv = store.get_mut(&id).unwrap();
+        conv.messages.push(msg(
+            ROLE_USER,
+            "连 10.1.2.3 的 sk-abcdefghijklmnopqrstuvwx 为什么 502",
+        ));
+        let mut command_card = card("cmd-1", "executed");
+        command_card.risk = "read-only".into();
+        command_card.explain = "看后端状态".into();
+        command_card.side_effect = "只读".into();
+        conv.messages.push(command_card);
+        conv.messages.push(AiMessage {
+            role: crate::app::ai::ROLE_PLAN_STEP,
+            text: "查看 nginx 日志".into(),
+            step_state: "done".into(),
+            card_id: "plan-0".into(),
+            ..Default::default()
+        });
+    }
+    let conv = store.get(&id).unwrap();
+    let md = export_markdown(conv, &ai_copilot::redact::IndexedRedactor::builtin());
+    assert!(!md.contains("10.1.2.3"), "private IP leaked: {md}");
+    assert!(!md.contains("sk-abcdefghijklmnopqrstuvwx"));
+    assert!(md.contains("<INTERNAL_IP_1>"));
+    assert!(md.contains("### Command card (read-only, gate direct, executed)"));
+    assert!(md.contains("df -h"));
+    assert!(md.contains("- [x] 查看 nginx 日志"));
 }

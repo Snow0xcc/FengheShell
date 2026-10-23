@@ -67,6 +67,10 @@ pub struct Conversation {
     /// 锚点标签已经被关闭 —— 会话保留，但后续轮次没有终端上下文。
     pub anchor_lost: bool,
     pub mode: CopilotMode,
+    /// 创建时锁定的模型配置名（F2）。`None` = 跟随全局默认。
+    pub model_ref: Option<String>,
+    /// 是否把用户记忆注入这条会话的系统提示（F7）。
+    pub memory_enabled: bool,
     /// 触发来源；`None` = 用户自己提问的普通会话。
     pub trigger: Option<TriggerTag>,
     pub status: ConversationStatus,
@@ -91,6 +95,8 @@ impl Conversation {
             anchor_tab,
             anchor_lost: false,
             mode,
+            model_ref: None,
+            memory_enabled: true,
             trigger: None,
             status: ConversationStatus::Idle,
             created_at: now,
@@ -259,6 +265,11 @@ pub struct StoredConversation {
     pub anchor_lost: bool,
     #[serde(default = "default_mode")]
     pub mode: String,
+    /// 创建时锁定的模型配置名（F2）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
+    #[serde(default = "default_memory_enabled")]
+    pub memory_enabled: bool,
     #[serde(default = "default_status")]
     pub status: String,
     #[serde(default)]
@@ -275,6 +286,10 @@ fn default_mode() -> String {
 
 fn default_status() -> String {
     "idle".to_string()
+}
+
+fn default_memory_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -396,6 +411,58 @@ impl ConversationStore {
     }
 
     /// 删除会话。运行中的会话先取消（审批按拒绝结算）。
+    /// 重命名（F6）。空标题直接拒 —— 列表里出现一条没名字的会话毫无用处。
+    pub fn rename(&mut self, id: &str, title: &str) -> bool {
+        let title = title.trim();
+        if title.is_empty() {
+            return false;
+        }
+        match self.get_mut(id) {
+            Some(conv) => {
+                conv.title = title.to_string();
+                conv.updated_at = Utc::now();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 会话级模型锁定（F2）：只影响之后发起的轮次。
+    pub fn set_model_ref(&mut self, id: &str, model_ref: Option<String>) -> bool {
+        match self.get_mut(id) {
+            Some(conv) => {
+                conv.model_ref = model_ref;
+                conv.updated_at = Utc::now();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 会话级模式（F3）：只影响之后的轮次，当前轮次照旧跑完。
+    pub fn set_mode(&mut self, id: &str, mode: CopilotMode) -> bool {
+        match self.get_mut(id) {
+            Some(conv) => {
+                conv.mode = mode;
+                conv.updated_at = Utc::now();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 会话级记忆开关（F7）。
+    pub fn set_memory_enabled(&mut self, id: &str, enabled: bool) -> bool {
+        match self.get_mut(id) {
+            Some(conv) => {
+                conv.memory_enabled = enabled;
+                conv.updated_at = Utc::now();
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn remove(&mut self, id: &str) -> bool {
         let Some(pos) = self.conversations.iter().position(|c| c.id == id) else {
             return false;
@@ -464,6 +531,8 @@ impl ConversationStore {
                     anchor_tab: c.anchor_tab.clone(),
                     anchor_lost: c.anchor_lost,
                     mode: c.mode.as_str().to_string(),
+                    model_ref: c.model_ref.clone(),
+                    memory_enabled: c.memory_enabled,
                     status: match c.status {
                         // 关掉的进程里不存在「正在跑」：重启后一律是中断。
                         ConversationStatus::Running => "interrupted".to_string(),
@@ -510,6 +579,8 @@ impl ConversationStore {
                 },
             );
             conv.anchor_lost = sc.anchor_lost;
+            conv.model_ref = sc.model_ref;
+            conv.memory_enabled = sc.memory_enabled;
             conv.status = match sc.status.as_str() {
                 "running" | "interrupted" => ConversationStatus::Interrupted,
                 _ => ConversationStatus::Idle,
@@ -697,6 +768,130 @@ where
         })
         .collect();
     out.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
+    out
+}
+
+/// 会话列表的检索条件（F6）：标题 / 消息全文大小写不敏感匹配。
+///
+/// 空查询 = 全部；`status` 只在非空时过滤（`idle` / `running` / `interrupted`）。
+pub fn search_summaries<F>(
+    store: &ConversationStore,
+    query: &str,
+    status: Option<&str>,
+    anchor_name: F,
+) -> Vec<ConversationSummary>
+where
+    F: Fn(&str) -> String,
+{
+    let needle = query.trim().to_lowercase();
+    summaries(store, anchor_name)
+        .into_iter()
+        .filter(|s| match status {
+            Some(want) if !want.is_empty() => s.status.as_str() == want,
+            _ => true,
+        })
+        .filter(|s| {
+            if needle.is_empty() {
+                return true;
+            }
+            if s.title.to_lowercase().contains(&needle) {
+                return true;
+            }
+            store
+                .get(&s.id)
+                .map(|c| {
+                    c.messages.iter().any(|m| {
+                        m.text.to_lowercase().contains(&needle)
+                            || m.cmd.to_lowercase().contains(&needle)
+                            || m.explain.to_lowercase().contains(&needle)
+                    })
+                })
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// 把一条会话导出成脱敏后的 Markdown（F6 P1 唯一的导出格式）。
+///
+/// 导出件按敏感文件保管：`redactor` 在每个字段落地前都过一遍，标题与锚点名
+/// 也一样。命令卡片保留风险 / 闸门 / 处置，Agent 计划与步骤痕迹按原文顺序
+/// 输出 —— 复盘时要能看见「AI 当时怎么想的」。
+pub fn export_markdown(conv: &Conversation, redactor: &IndexedRedactor) -> String {
+    let clean = |text: &str| -> String {
+        if text.is_empty() || redactor.is_empty() {
+            return text.to_string();
+        }
+        let mut map = ai_copilot::redact::RedactionMap::new();
+        redactor.apply(text, &mut map)
+    };
+    let mut out = String::new();
+    let title = if conv.title.trim().is_empty() {
+        crate::app::ai::UNTITLED_TITLE.to_string()
+    } else {
+        conv.title.trim().to_string()
+    };
+    out.push_str(&format!("# {}\n\n", clean(&title)));
+    out.push_str(&format!(
+        "- Status: {}\n- Mode: {}\n- Created: {}\n- Updated: {}\n",
+        conv.status.as_str(),
+        conv.mode.as_str(),
+        conv.created_at.to_rfc3339(),
+        conv.updated_at.to_rfc3339()
+    ));
+    if let Some(model) = &conv.model_ref {
+        out.push_str(&format!("- Model: {}\n", clean(model)));
+    }
+    out.push_str(&format!(
+        "\n> Exported from FengheShell. Secrets matching the local redaction rules are replaced with placeholders; treat this file as sensitive.\n\n"
+    ));
+    for m in &conv.messages {
+        match m.role {
+            crate::app::ai::ROLE_USER => {
+                out.push_str(&format!("## User\n\n{}\n\n", clean(&m.text)));
+            }
+            crate::app::ai::ROLE_ASSISTANT => {
+                out.push_str(&format!("## Assistant\n\n{}\n\n", clean(&m.text)));
+            }
+            crate::app::ai::ROLE_ERROR => {
+                out.push_str(&format!("> **Error**: {}\n\n", clean(&m.text)));
+            }
+            crate::app::ai::ROLE_STEP => {
+                let mark = if m.step_failed { "x" } else { "-" };
+                out.push_str(&format!("- [{}] step: {}\n", mark, clean(&m.text)));
+            }
+            crate::app::ai::ROLE_PLAN_STEP => {
+                let mark = match m.step_state.as_str() {
+                    "done" => "x",
+                    "failed" => "!",
+                    "running" => "~",
+                    _ => " ",
+                };
+                out.push_str(&format!("- [{}] {}\n", mark, clean(&m.text)));
+            }
+            crate::app::ai::ROLE_CARD => {
+                out.push_str(&format!(
+                    "### Command card ({}, gate {}, {})\n\n",
+                    clean(&m.risk),
+                    clean(&m.gate),
+                    clean(&m.disposition)
+                ));
+                if !m.explain.is_empty() {
+                    out.push_str(&format!("{}\n\n", clean(&m.explain)));
+                }
+                out.push_str(&format!("```\n{}\n```\n\n", clean(&m.cmd)));
+                if !m.side_effect.is_empty() {
+                    out.push_str(&format!("- Side effect: {}\n", clean(&m.side_effect)));
+                }
+                if !m.blocked_reason.is_empty() {
+                    out.push_str(&format!("- Blocked: {}\n", clean(&m.blocked_reason)));
+                }
+                out.push('\n');
+            }
+            _ => {
+                out.push_str(&format!("{}\n\n", clean(&m.text)));
+            }
+        }
+    }
     out
 }
 

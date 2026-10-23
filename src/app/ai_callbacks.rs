@@ -302,23 +302,41 @@ fn model_default(protocol: &str) -> &'static str {
     }
 }
 
-fn ai_config(store: &Rc<RefCell<ConfigStore>>, shell: ShellKind) -> CopilotConfig {
+/// 组装一轮的 LLM 配置。
+///
+/// `profile` = Some(name) 时会话按创建时锁定的模型跑（F2）；解析不到就回落到
+/// 全局默认，调用方会在面板里给出提示。`memories` 为 None 表示这条会话关掉了
+/// 记忆注入（F7）。
+fn ai_config(
+    store: &Rc<RefCell<ConfigStore>>,
+    shell: ShellKind,
+    profile: Option<&str>,
+    memories: Option<Vec<ai_copilot::memory::MemoryRecord>>,
+) -> CopilotConfig {
     let s = store.borrow();
-    let protocol = s.ai_protocol();
-    let endpoint = if s.ai_endpoint().trim().is_empty() {
-        endpoint_default(protocol).to_string()
+    let picked = profile
+        .and_then(|name| s.ai_profile_by_name(name))
+        .unwrap_or_else(|| s.ai_default_profile());
+    let protocol = picked.protocol.trim().to_string();
+    let protocol = if protocol.is_empty() {
+        "openai-completions".to_string()
     } else {
-        s.ai_endpoint().to_string()
+        protocol
     };
-    let model = if s.ai_model().trim().is_empty() {
-        model_default(protocol).to_string()
+    let endpoint = if picked.endpoint.trim().is_empty() {
+        endpoint_default(&protocol).to_string()
     } else {
-        s.ai_model().to_string()
+        picked.endpoint.trim().to_string()
+    };
+    let model = if picked.model.trim().is_empty() {
+        model_default(&protocol).to_string()
+    } else {
+        picked.model.trim().to_string()
     };
     CopilotConfig {
-        protocol: protocol.to_string(),
+        protocol,
         endpoint,
-        api_key: s.ai_api_key().to_string(),
+        api_key: picked.api_key.as_str().to_string(),
         model,
         shell,
         redaction_enabled: s.ai_redaction_enabled(),
@@ -327,7 +345,19 @@ fn ai_config(store: &Rc<RefCell<ConfigStore>>, shell: ShellKind) -> CopilotConfi
         locale: crate::i18n::current_code().to_string(),
         mode: s.ai_mode(),
         skills: s.ai_skills(),
+        memories: memories.unwrap_or_default(),
     }
+}
+
+/// 起一轮时这一份记忆：会话关掉注入就是空的，否则用全局启用项（F7）。
+fn conversation_memories(
+    store: &Rc<RefCell<ConfigStore>>,
+    memory_enabled: bool,
+) -> Option<Vec<ai_copilot::memory::MemoryRecord>> {
+    if !memory_enabled {
+        return None;
+    }
+    Some(store.borrow().ai_active_memory())
 }
 
 /// 起一轮 Triage。UI 只负责打包上下文，之后全部异步进行。
@@ -340,7 +370,7 @@ fn ask_question(
 ) {
     let conversations = core.conversations.clone();
     // 本轮要用的锚点、忙碌态、当前模式先取一份快照（短临界区）。
-    let (anchor, busy, mode, title) = {
+    let (anchor, busy, mode, title, model_ref, memory_enabled) = {
         let store = match conversations.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
@@ -353,6 +383,8 @@ fn ask_question(
             conv.is_busy(),
             conv.mode,
             conv.title.clone(),
+            conv.model_ref.clone(),
+            conv.memory_enabled,
         )
     };
     let _ = title;
@@ -409,7 +441,8 @@ fn ask_question(
         .map(|(s, j)| (Some(s), j))
         .unwrap_or((None, Vec::new()));
     let shell = shell_kind(session.as_ref());
-    let mut cfg = ai_config(&store, shell);
+    // 会话级模型（F2）与记忆开关（F7）：都按会话自己的快照来，不看全局默认。
+    let mut cfg = ai_config(&store, shell, model_ref.as_deref(), conversation_memories(&store, memory_enabled));
     // 会话级模式（F3）：这一轮按会话自己的 ask/agent 跑，不看全局默认。
     cfg.mode = mode;
     let local = local_snapshot(core);
@@ -646,7 +679,7 @@ pub(super) fn wire_ai(ctx: &WinCtx) {
                 return;
             }
             let prefix_s = prefix.to_string();
-            let cfg = ai_config(&store, ShellKind::Posix);
+            let cfg = ai_config(&store, ShellKind::Posix, None, None);
             // 带上这个标签最近跑过的几条命令，补全才能贴合当前在做什么。
             let recent_commands = ctx
                 .lock()
