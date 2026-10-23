@@ -29,7 +29,7 @@ import { SystemInfoWindow, SysInfoRow, SysMetricRow, SysNetRow } from "system_in
 import { EditorWindow } from "editor_window.slint";
 import { EditorPane, EditorFindResult, EditorDoc } from "editor_pane.slint";
 import { InterfacePanel, OutputRuleItem, WslProfileInfo, CustomAgentInfo } from "interface_panel.slint";
-import { AiMessage, AiPanel, ConversationInfo } from "ai_panel.slint";
+import { AiMessage, AiPanel, AiProfileInfo, ConversationInfo } from "ai_panel.slint";
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow, EditorWindow }
 import { ComboBox, SpinBox, LineEdit, Button, ScrollView, CheckBox, Palette } from "std-widgets.slint";
@@ -724,6 +724,18 @@ export component AppWindow inherits Window {
     in-out property <[ConversationInfo]> ai-conversations: [];
     in-out property <bool> ai-list-open: false;
     in-out property <int> ai-max-parallel: 3;
+    /// 模型 chip（F2）：会话锁定的模型名 + 可选配置列表。
+    in-out property <string> ai-model-name: "";
+    in-out property <[AiProfileInfo]> ai-model-profiles: [];
+    in-out property <bool> ai-model-list-open: false;
+    callback ai-set-model(string);
+    /// 会话级记忆开关（F7）。
+    in-out property <bool> ai-memory-enabled: true;
+    callback ai-set-memory-enabled(bool);
+    /// 会话列表检索（F6）。
+    in-out property <string> ai-search: "";
+    callback ai-search-changed(string);
+    callback ai-export-conversation(string);
     /// 面板宽度档位：360 | 520（持久化到 sessions.json 的 ai_panel_width）。
     in-out property <int> ai-panel-width: 360;
     /// 会话列表 / 新建 / 切换 / 关闭 / 重命名。
@@ -2297,6 +2309,11 @@ export component AppWindow inherits Window {
                         anchor-name: root.ai-anchor-name;
                         panel-width: root.ai-panel-width;
                         max-parallel: root.ai-max-parallel;
+                        model-name: root.ai-model-name;
+                        profiles: root.ai-model-profiles;
+                        model-list-open <=> root.ai-model-list-open;
+                        memory-enabled <=> root.ai-memory-enabled;
+                        search <=> root.ai-search;
                         messages: root.ai-messages;
                         busy: root.ai-busy;
                         mode <=> root.ai-mode;
@@ -2316,6 +2333,10 @@ export component AppWindow inherits Window {
                         close-conversation(id) => { root.ai-close-conversation(id); }
                         rename-conversation(id, name) => { root.ai-rename-conversation(id, name); }
                         set-width(w) => { root.ai-set-width(w); }
+                        set-model(name) => { root.ai-set-model(name); }
+                        set-memory-enabled(v) => { root.ai-set-memory-enabled(v); }
+                        search-changed(q) => { root.ai-search-changed(q); }
+                        export-conversation(id) => { root.ai-export-conversation(id); }
                         set-mode(m) => { root.ai-set-mode(m); }
                         set-completion(v) => { root.ai-set-completion(v); }
                         send(text) => { root.ai-send(text); }

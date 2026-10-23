@@ -1861,6 +1861,38 @@ impl ConfigStore {
         self.cache.ai_memory.clear();
     }
 
+    /// 覆盖用户自定义 Skill 清单（F8 设置页的保存入口）。
+    ///
+    /// 校验规则与读取时一致：id 非空、不占用内置 `general`、内容非空、id 不重复。
+    /// 返回真正写进去的条数；重复 id 保留第一条。
+    pub fn set_ai_skills(&mut self, skills: Vec<(String, String, String, String)>) -> usize {
+        let mut seen = std::collections::HashSet::new();
+        let mut kept = Vec::new();
+        for (id, name, description, content) in skills {
+            let id = id.trim().to_string();
+            if id.is_empty()
+                || id == ai_copilot::skills::GENERAL_ID
+                || content.trim().is_empty()
+                || !seen.insert(id.clone())
+            {
+                continue;
+            }
+            kept.push(AiSkillSpec {
+                id: id.clone(),
+                name: if name.trim().is_empty() {
+                    id
+                } else {
+                    name.trim().to_string()
+                },
+                description: description.trim().to_string(),
+                content,
+            });
+        }
+        let count = kept.len();
+        self.cache.ai_skills = kept;
+        count
+    }
+
     /// 同时运行的 AI 会话上限（默认 3，钳制在 1..=5）。
     pub fn ai_max_parallel(&self) -> usize {
         match self.cache.ai_max_parallel {
