@@ -778,6 +778,7 @@ export component AppWindow inherits Window {
     in-out property <bool> mcp-use-saved-credentials: true;
     in-out property <bool> mcp-allow-commands: true;
     in-out property <bool> mcp-allow-file-transfers: true;
+    in property <string> mcp-status: "";
     callback set-mcp-permissions(bool, bool, bool, bool);
     // --- M2 设置面：模型配置 / 记忆 / 技能 / 并发（F2 F7 F8 D3）-------------
     in-out property <[AiProfileRow]> ai-profiles: [];
@@ -5246,6 +5247,7 @@ export component AppWindow inherits Window {
                     mcp-use-saved-credentials <=> root.mcp-use-saved-credentials;
                     mcp-allow-commands <=> root.mcp-allow-commands;
                     mcp-allow-file-transfers <=> root.mcp-allow-file-transfers;
+                    mcp-status: root.mcp-status;
                     wallpaper-overlay <=> root.wallpaper-overlay;
                     current-wallpaper: root.current-wallpaper;
                     custom-wallpaper-name: root.custom-wallpaper-name;
