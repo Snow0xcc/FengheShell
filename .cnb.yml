@@ -49,6 +49,10 @@ main:
           script: cargo test --workspace
         - name: build check
           script: cargo build --workspace
+        # 遥测门禁（docs/AI_PANEL_REQUIREMENTS.md §6.1 的 P0-N1）：禁止遥测/埋点/
+        # 使用统计/崩溃上报。"禁止"写进文档不够，这里给它一个可机械校验的形式。
+        - name: no telemetry scan
+          script: sh scripts/check-no-telemetry.sh
     - &npm-audit-ci
       name: npm-audit
       docker:
@@ -86,6 +90,12 @@ main:
 # blocks twice, so pre-existing findings cannot turn an unrelated PR red.
 "**":
   push:
+    - name: no-telemetry
+      docker:
+        image: alpine:3
+      stages:
+        - name: 遥测关键字扫描
+          script: sh scripts/check-no-telemetry.sh
     - name: sca-full
       stages:
         - name: 开源组件漏洞全量扫描
@@ -107,6 +117,14 @@ main:
             scanMode: full
             publish: true
   pull_request.target:
+    # 遥测门禁同样挂在所有分支上：分支链上的 PR 不会跑到 main 的 rust 流水线，
+    # 只挂 main 的话这条约束在长分支上形同虚设。
+    - name: no-telemetry
+      docker:
+        image: alpine:3
+      stages:
+        - name: 遥测关键字扫描
+          script: sh scripts/check-no-telemetry.sh
     - name: sca-gate
       stages:
         - name: 开源组件漏洞增量门禁
