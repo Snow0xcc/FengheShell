@@ -221,6 +221,8 @@ FengheShell **没有任何遥测**：没有使用统计、埋点、崩溃上报�
   附带的硬件快照同样只进这一轮对话的 prompt。
 - 出网前的脱敏规则见上文，它覆盖不到 IPv6、内网域名、私钥块等 —— 涉及这些内容请自行
   规避或先改成本机占位符。
+- 这条不是口头承诺：CI 有门禁（`scripts/check-no-telemetry.sh`），在参与构建的
+  `src` / `crates` / `tests` / `ui` 里命中遥测 / 埋点 / 统计上报的特征词即构建失败。
 
 ## 硬件快照融合
 
@@ -575,6 +577,9 @@ conversation data never go to any server we control.
 - What redaction does and does not cover is listed above (IPv6, internal hostnames
   and private-key blocks are out of scope) - avoid those, or replace them with local
   placeholders first.
+- This is enforced, not just promised: a CI gate (`scripts/check-no-telemetry.sh`)
+  fails the build if a telemetry / tracking / analytics keyword appears anywhere in
+  the built sources (`src` / `crates` / `tests` / `ui`).
 
 ## Hardware snapshot fusion
 
