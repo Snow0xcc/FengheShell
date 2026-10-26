@@ -28,8 +28,8 @@ import { ProcWindow, ProcRow } from "proc_window.slint";
 import { SystemInfoWindow, SysInfoRow, SysMetricRow, SysNetRow } from "system_info_window.slint";
 import { EditorWindow } from "editor_window.slint";
 import { EditorPane, EditorFindResult, EditorDoc } from "editor_pane.slint";
-import { InterfacePanel, OutputRuleItem, WslProfileInfo, CustomAgentInfo } from "interface_panel.slint";
-import { AiMessage } from "ai_panel.slint";
+import { InterfacePanel, OutputRuleItem, WslProfileInfo, CustomAgentInfo, AiProfileRow, AiMemoryRow, AiSkillRow } from "interface_panel.slint";
+import { AiMessage, AiPanel, AiProfileInfo, ConversationInfo } from "ai_panel.slint";
 // Re-export so `slint::include_modules!` generates the detached Rust window types.
 export { ProcWindow, SystemInfoWindow, EditorWindow }
 import { ComboBox, SpinBox, LineEdit, Button, ScrollView, CheckBox, Palette } from "std-widgets.slint";
@@ -55,6 +55,8 @@ export struct TransferInfo {
 export struct TerminalState {
     id: string,
     status: string,
+    /// 标签标题：AI 会话列表用它显示「锚定到哪个终端」。
+    title: string,
     spans: [TermSpan],     // coloured runs of the visible terminal screen
     cursor-row: int,       // cursor cell on the grid
     cursor-col: int,
@@ -83,9 +85,6 @@ export struct TerminalState {
     // AI Copilot drawer state (#ai-copilot, FengheShell x rssh 缝合). The
     // conversation is authoritative in Rust; this model is its UI mirror so a
     // tab survives getting moved between windows.
-    ai-messages: [AiMessage],
-    ai-open: bool,
-    ai-busy: bool,
     /// 补全层：命令输入框后方的「幽灵文本」补全（空串 = 无建议）。
     ai-completion: string,
     sftp-panel-height: length,  // SFTP panel extent (bottom dock) — per session
@@ -712,7 +711,42 @@ export component AppWindow inherits Window {
     in-out property <bool> update-check-enabled: true;   // startup new-version check (#184)
     callback set-update-check-enabled(bool);       // apply + persist
     // --- AI Copilot (#ai-copilot) ---------------------------------------
-    // Window-wide LLM settings; each terminal tab owns its own conversation.
+    // 面板是应用级右侧 dock；会话在 Rust 侧是权威副本，这里的模型只是镜像。
+    in-out property <bool> ai-open: false;
+    /// 当前查看的会话 id（每窗口一份）。
+    in-out property <string> ai-active-id: "";
+    in-out property <[AiMessage]> ai-messages: [];
+    in-out property <bool> ai-busy: false;
+    in-out property <string> ai-title: "";
+    /// 锚点名（空串 = 无终端锚点 / 锚点已失效）。
+    in-out property <string> ai-anchor-name: "";
+    /// 会话列表 popover 的内容与开关。
+    in-out property <[ConversationInfo]> ai-conversations: [];
+    in-out property <bool> ai-list-open: false;
+    in-out property <int> ai-max-parallel: 3;
+    /// 模型 chip（F2）：会话锁定的模型名 + 可选配置列表。
+    in-out property <string> ai-model-name: "";
+    in-out property <[AiProfileInfo]> ai-model-profiles: [];
+    in-out property <bool> ai-model-list-open: false;
+    callback ai-set-model(string);
+    /// 会话级记忆开关（F7）。
+    in-out property <bool> ai-memory-enabled: true;
+    callback ai-set-memory-enabled(bool);
+    /// 会话列表检索（F6）。
+    in-out property <string> ai-search: "";
+    callback ai-search-changed(string);
+    callback ai-export-conversation(string);
+    /// 面板宽度档位：360 | 520（持久化到 sessions.json 的 ai_panel_width）。
+    in-out property <int> ai-panel-width: 360;
+    /// 会话列表 / 新建 / 切换 / 关闭 / 重命名。
+    callback ai-toggle-panel();
+    callback ai-toggle-list();
+    callback ai-new-conversation();
+    callback ai-select-conversation(string);      // conversation-id
+    callback ai-close-conversation(string);       // conversation-id
+    callback ai-rename-conversation(string, string);
+    callback ai-set-width(int);
+    // 窗口级 LLM 设置。
     in-out property <string> ai-protocol: "openai-completions";
     in-out property <string> ai-endpoint: "";
     in-out property <string> ai-model: "";
@@ -721,18 +755,16 @@ export component AppWindow inherits Window {
     /// YOLO 模式（完全信任）：关脱敏 + 所有命令免审批。默认关。
     in-out property <bool> ai-yolo-mode: false;
     callback ai-set-yolo(bool);                   // toggle + persist
-    callback ai-send(string, string);            // tab-id, question
-    callback ai-toggle(string);                  // tab-id
-    callback ai-close(string);
-    callback ai-clear(string);
-    callback ai-cancel(string);
-    callback ai-run-card(string, string);        // tab-id, card-id
-    callback ai-reject-card(string, string);     // tab-id, card-id
+    callback ai-send(string);                     // question（发往当前会话）
+    callback ai-clear();
+    callback ai-cancel();
+    callback ai-run-card(string);                 // card-id
+    callback ai-reject-card(string);              // card-id
     callback ai-apply-settings(string, string, string, string, bool, bool);
     callback ai-export-audit();
     in-out property <string> ai-test-status: "";
     in-out property <bool> ai-test-busy: false;
-    /// AI 工作方式：`ask` | `agent`。
+    /// AI 工作方式：`ask` | `agent`（会话级，切换作用于当前会话）。
     in-out property <string> ai-mode: "ask";
     /// 空会话时的起手建议。
     in property <[string]> ai-starters: [];
@@ -746,7 +778,44 @@ export component AppWindow inherits Window {
     in-out property <bool> mcp-use-saved-credentials: true;
     in-out property <bool> mcp-allow-commands: true;
     in-out property <bool> mcp-allow-file-transfers: true;
+    in property <string> mcp-status: "";
     callback set-mcp-permissions(bool, bool, bool, bool);
+    // --- M2 设置面：模型配置 / 记忆 / 技能 / 并发（F2 F7 F8 D3）-------------
+    in-out property <[AiProfileRow]> ai-profiles: [];
+    in-out property <string> ai-profile-edit: "";
+    in-out property <string> ai-profile-name: "";
+    in-out property <string> ai-profile-protocol: "openai-completions";
+    in-out property <string> ai-profile-endpoint: "";
+    in-out property <string> ai-profile-model: "";
+    in-out property <string> ai-profile-key: "";
+    in-out property <bool> ai-profile-default: false;
+    in-out property <string> ai-profile-status: "";
+    callback ai-save-profile(string, string, string, string, string, string, bool);
+    callback ai-delete-profile(string);
+    callback ai-edit-profile(string);
+    callback ai-clear-profile-form();
+    in-out property <[AiMemoryRow]> ai-memories: [];
+    in-out property <string> ai-memory-edit: "";
+    in-out property <string> ai-memory-draft: "";
+    in-out property <string> ai-memory-status: "";
+    callback ai-save-memory(string, string);
+    callback ai-delete-memory(string);
+    callback ai-toggle-memory(string, bool);
+    callback ai-clear-memories();
+    callback ai-edit-memory(string);
+    in-out property <[AiSkillRow]> ai-skill-rows: [];
+    in-out property <string> ai-skill-edit: "";
+    in-out property <string> ai-skill-id: "";
+    in-out property <string> ai-skill-name: "";
+    in-out property <string> ai-skill-desc: "";
+    in-out property <string> ai-skill-content: "";
+    in-out property <string> ai-skill-status: "";
+    callback ai-save-skill(string, string, string, string, string);
+    callback ai-delete-skill(string);
+    callback ai-edit-skill(string);
+    callback ai-clear-skill-form();
+    callback set-ai-max-parallel(int);
+    callback open-mcp-docs();
     callback add-wsl-profile(string, string, string);
     callback remove-wsl-profile(string);
     callback pick-wsl-directory();
@@ -1361,7 +1430,14 @@ export component AppWindow inherits Window {
             // so the physical Ctrl+Space also lands here via `control`.
             } else if (e.modifiers.control && !e.modifiers.alt && !e.modifiers.shift
                     && (e.text == " " || e.text == "\u{0000}")) {
-                root.ai-toggle(root.active-tab-id);
+                root.ai-toggle-panel();
+                accept
+            // AI Copilot: Ctrl+Shift+O opens a new conversation anchored to the
+            // active tab (Ctrl+Shift+N is already "new window"). Intercepted
+            // here so the shell never sees the keystroke.
+            } else if (e.modifiers.control && !e.modifiers.alt && e.modifiers.shift
+                    && (e.text == "o" || e.text == "O" || e.text == "\u{000f}")) {
+                root.ai-new-conversation();
                 accept
             } else {
                 reject
@@ -1901,8 +1977,12 @@ export component AppWindow inherits Window {
                     ? parent.quick-w + parent.quick-sp : 0px;
                 y: root.quick-panel-open && !root.quick-panel-collapsed && root.quick-panel-dock == "top"
                     ? parent.quick-h + parent.quick-sp : 0px;
-                width: root.quick-panel-open && !root.quick-panel-collapsed && parent.quick-horizontal
-                    ? parent.width - parent.quick-w - parent.quick-sp : parent.width;
+                // The Copilot panel is an application-level right dock: the
+                // central area shrinks by its width so the terminal is never
+                // covered (#ai-copilot).
+                width: (root.quick-panel-open && !root.quick-panel-collapsed && parent.quick-horizontal
+                    ? parent.width - parent.quick-w - parent.quick-sp : parent.width)
+                    - (root.ai-open ? root.ai-panel-width * 1px : 0px);
                 height: root.quick-panel-open && !root.quick-panel-collapsed && !parent.quick-horizontal
                     ? parent.height - parent.quick-h - parent.quick-sp : parent.height;
                 clip: true;
@@ -2102,33 +2182,12 @@ export component AppWindow inherits Window {
                         sftp-sort-dir: term.sftp-sort-dir;
                         sftp-available: term.sftp-available;
                         tunnels: term.tunnels;
-                        ai-messages: term.ai-messages;
-                        ai-open: term.ai-open;
-                        ai-busy: term.ai-busy;
+                        ai-open: root.ai-open;
                         ai-completion: term.ai-completion;
                         ai-complete-request(text) => { root.ai-complete-request(term.id, text); }
                         ai-completion-enabled <=> root.ai-completion-enabled;
                         ai-set-completion(v) => { root.ai-set-completion(v); }
-                        yolo-mode: root.ai-yolo-mode;
-                        ai-protocol: root.ai-protocol;
-                        ai-endpoint: root.ai-endpoint;
-                        ai-model: root.ai-model;
-                        ai-redaction-enabled: root.ai-redaction-enabled;
-                        ai-auto-run-readonly: root.ai-auto-run-readonly;
-                        ai-send(text) => { root.ai-send(term.id, text); }
-                        ai-toggle() => { root.ai-toggle(term.id); }
-                        ai-close() => { root.ai-close(term.id); }
-                        ai-clear() => { root.ai-clear(term.id); }
-                        ai-cancel() => { root.ai-cancel(term.id); }
-                        ai-run-card(id) => { root.ai-run-card(term.id, id); }
-                        ai-reject-card(id) => { root.ai-reject-card(term.id, id); }
-                        ai-apply-settings(p, e, m, k, r, a) => { root.ai-apply-settings(p, e, m, k, r, a); }
-                        ai-test-status <=> root.ai-test-status;
-                        ai-test-busy <=> root.ai-test-busy;
-                        ai-test-connection(p, e, m, k) => { root.ai-test-connection(p, e, m, k); }
-                        ai-mode <=> root.ai-mode;
-                        ai-starters: root.ai-starters;
-                        ai-set-mode(m) => { root.ai-set-mode(m); }
+                        ai-toggle() => { root.ai-toggle-panel(); }
                         quick-commands: root.quick-commands;
                         quick-sidebar-enabled: root.quick-commands-as-sidebar;
                         quick-panel-docked: root.quick-panel-open;
@@ -2263,6 +2322,71 @@ export component AppWindow inherits Window {
                         select-word(r, c) => { root.term-select-word(term.id, r, c); }
                         select-autoscroll(dir) => { root.term-select-autoscroll(term.id, dir); }
                     }
+
+                // --- AI Copilot 面板（应用级右侧 dock，#ai-copilot） -----------
+                // 只占布局宽度，不覆盖终端：central 已按 ai-panel-width 收缩。
+                // 会话生命周期独立于标签 / 窗口，收起面板不会打断正在跑的一轮。
+                if root.ai-open : Rectangle {
+                    x: parent.width - root.ai-panel-width * 1px;
+                    y: 0px;
+                    width: root.ai-panel-width * 1px;
+                    height: parent.height;
+                    background: Theme.bg-panel;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+
+                    AiPanel {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+                        conversations: root.ai-conversations;
+                        list-open <=> root.ai-list-open;
+                        title: root.ai-title;
+                        anchor-name: root.ai-anchor-name;
+                        panel-width: root.ai-panel-width;
+                        max-parallel: root.ai-max-parallel;
+                        model-name: root.ai-model-name;
+                        profiles: root.ai-model-profiles;
+                        model-list-open <=> root.ai-model-list-open;
+                        memory-enabled <=> root.ai-memory-enabled;
+                        search <=> root.ai-search;
+                        messages: root.ai-messages;
+                        busy: root.ai-busy;
+                        mode <=> root.ai-mode;
+                        starters: root.ai-starters;
+                        protocol: root.ai-protocol;
+                        endpoint: root.ai-endpoint;
+                        model: root.ai-model;
+                        redaction-enabled: root.ai-redaction-enabled;
+                        auto-run-readonly: root.ai-auto-run-readonly;
+                        yolo-mode: root.ai-yolo-mode;
+                        completion-enabled <=> root.ai-completion-enabled;
+                        test-status <=> root.ai-test-status;
+                        test-busy <=> root.ai-test-busy;
+                        toggle-list => { root.ai-toggle-list(); }
+                        new-conversation => { root.ai-new-conversation(); }
+                        select-conversation(id) => { root.ai-select-conversation(id); }
+                        close-conversation(id) => { root.ai-close-conversation(id); }
+                        rename-conversation(id, name) => { root.ai-rename-conversation(id, name); }
+                        set-width(w) => { root.ai-set-width(w); }
+                        set-model(name) => { root.ai-set-model(name); }
+                        set-memory-enabled(v) => { root.ai-set-memory-enabled(v); }
+                        search-changed(q) => { root.ai-search-changed(q); }
+                        export-conversation(id) => { root.ai-export-conversation(id); }
+                        set-mode(m) => { root.ai-set-mode(m); }
+                        set-completion(v) => { root.ai-set-completion(v); }
+                        send(text) => { root.ai-send(text); }
+                        clear() => { root.ai-clear(); }
+                        cancel() => { root.ai-cancel(); }
+                        run-card(id) => { root.ai-run-card(id); }
+                        reject-card(id) => { root.ai-reject-card(id); }
+                        apply-settings(p, e, m, k, r, a) => { root.ai-apply-settings(p, e, m, k, r, a); }
+                        test-connection(p, e, m, k) => { root.ai-test-connection(p, e, m, k); }
+                        close() => { root.ai-toggle-panel(); }
+                    }
+                }
+
 
                     // Editor tabs (#494): same show-by-active-id scheme as the
                     // terminals above. Only the editor is shown — no SFTP panel
@@ -4371,7 +4495,8 @@ export component AppWindow inherits Window {
                 ShortcutRow { keys: root.is-mac ? "⌘⇧N" : "Ctrl+Shift+N"; desc: root.lang-en ? "New window" : "新建窗口"; }
                 ShortcutRow { keys: root.is-mac ? "⌘⌥Z" : "Ctrl+Alt+Z"; desc: root.lang-en ? "Toggle zen (focus) mode" : "切换专注模式"; }
                 ShortcutRow { keys: root.is-mac ? "⌥↩" : "Alt+Enter"; desc: root.lang-en ? "Toggle terminal fullscreen" : "切换终端全屏"; }
-                ShortcutRow { keys: "Ctrl+Space"; desc: root.lang-en ? "Toggle AI Copilot drawer" : "开关 AI Copilot 抽屉"; }
+                ShortcutRow { keys: "Ctrl+Space"; desc: root.lang-en ? "Toggle AI Copilot panel" : "开关 AI Copilot 面板"; }
+                ShortcutRow { keys: root.is-mac ? "⌘⇧O" : "Ctrl+Shift+O"; desc: root.lang-en ? "New AI conversation" : "新建 AI 会话"; }
 
                 Rectangle { height: 6px; }
                 Text { text: root.lang-en ? "Terminal" : "终端";
@@ -5056,6 +5181,42 @@ export component AppWindow inherits Window {
                         root.ai-apply-settings(p, e, m, k, r, a);
                     }
                     ai-export-audit() => { root.ai-export-audit(); }
+                    ai-profiles: root.ai-profiles;
+                    ai-profile-edit <=> root.ai-profile-edit;
+                    ai-profile-name <=> root.ai-profile-name;
+                    ai-profile-protocol <=> root.ai-profile-protocol;
+                    ai-profile-endpoint <=> root.ai-profile-endpoint;
+                    ai-profile-model <=> root.ai-profile-model;
+                    ai-profile-key <=> root.ai-profile-key;
+                    ai-profile-default <=> root.ai-profile-default;
+                    ai-profile-status <=> root.ai-profile-status;
+                    ai-save-profile(e, n, p, u, m, k, d) => { root.ai-save-profile(e, n, p, u, m, k, d); }
+                    ai-delete-profile(n) => { root.ai-delete-profile(n); }
+                    ai-edit-profile(n) => { root.ai-edit-profile(n); }
+                    ai-clear-profile-form() => { root.ai-clear-profile-form(); }
+                    ai-memories: root.ai-memories;
+                    ai-memory-edit <=> root.ai-memory-edit;
+                    ai-memory-draft <=> root.ai-memory-draft;
+                    ai-memory-status <=> root.ai-memory-status;
+                    ai-save-memory(id, c) => { root.ai-save-memory(id, c); }
+                    ai-delete-memory(id) => { root.ai-delete-memory(id); }
+                    ai-toggle-memory(id, on) => { root.ai-toggle-memory(id, on); }
+                    ai-clear-memories() => { root.ai-clear-memories(); }
+                    ai-edit-memory(id) => { root.ai-edit-memory(id); }
+                    ai-skill-rows: root.ai-skill-rows;
+                    ai-skill-edit <=> root.ai-skill-edit;
+                    ai-skill-id <=> root.ai-skill-id;
+                    ai-skill-name <=> root.ai-skill-name;
+                    ai-skill-desc <=> root.ai-skill-desc;
+                    ai-skill-content <=> root.ai-skill-content;
+                    ai-skill-status <=> root.ai-skill-status;
+                    ai-save-skill(e, id, n, d, c) => { root.ai-save-skill(e, id, n, d, c); }
+                    ai-delete-skill(id) => { root.ai-delete-skill(id); }
+                    ai-edit-skill(id) => { root.ai-edit-skill(id); }
+                    ai-clear-skill-form() => { root.ai-clear-skill-form(); }
+                    ai-max-parallel: root.ai-max-parallel;
+                    set-ai-max-parallel(n) => { root.set-ai-max-parallel(n); }
+                    open-mcp-docs() => { root.open-mcp-docs(); }
                     webdav-enabled <=> root.webdav-enabled;
                     webdav-url <=> root.webdav-url;
                     webdav-username <=> root.webdav-username;
@@ -5086,6 +5247,7 @@ export component AppWindow inherits Window {
                     mcp-use-saved-credentials <=> root.mcp-use-saved-credentials;
                     mcp-allow-commands <=> root.mcp-allow-commands;
                     mcp-allow-file-transfers <=> root.mcp-allow-file-transfers;
+                    mcp-status: root.mcp-status;
                     wallpaper-overlay <=> root.wallpaper-overlay;
                     current-wallpaper: root.current-wallpaper;
                     custom-wallpaper-name: root.custom-wallpaper-name;

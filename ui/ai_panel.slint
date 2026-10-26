@@ -5,6 +5,25 @@
 import { Theme } from "theme.slint";
 import { LabeledInput } from "widgets.slint";
 
+/// 会话列表的一行（标题 / 锚点名 / 状态 / 更新时间 / 是否命中检索）。
+export struct ConversationInfo {
+    id: string,
+    title: string,
+    anchor-name: string,
+    status: string,        // idle | running | interrupted
+    updated: string,       // 已格式化的本地时间
+    alive: bool,           // 锚点终端是否还在（锚点丢了会置灰）
+    preview: string,       // 检索命中位置附近的一段纯文本（F6）
+}
+
+/// 模型 chip 的一项（F2：多份模型配置）。
+export struct AiProfileInfo {
+    name: string,
+    model: string,
+    protocol: string,
+    is-default: bool,
+}
+
 export struct AiMessage {
     role: int,              // 0 用户 / 1 助手 / 2 命令卡片 / 3 错误 / 4 Agent 步骤
     text: string,
@@ -23,6 +42,36 @@ export struct AiMessage {
 export component AiPanel inherits Rectangle {
     in property <[AiMessage]> messages: [];
     in property <bool> busy: false;
+    /// 会话列表（Copilot 头部标题点击展开）。
+    in property <[ConversationInfo]> conversations: [];
+    in-out property <bool> list-open: false;
+    /// 当前会话标题与锚点名（空串 = 无终端锚点）。
+    in property <string> title: "New conversation";
+    in property <string> anchor-name: "";
+    /// 面板宽度档位：360 | 520，切换即持久化。
+    in property <int> panel-width: 360;
+    /// 同时运行的会话上限（满了发送按钮禁用并提示）。
+    in property <int> max-parallel: 3;
+    /// 模型 chip 的内容与弹出列表（F2）：会话创建时锁定，运行中不可改。
+    in property <[AiProfileInfo]> profiles: [];
+    /// 当前会话锁定的模型名（空串 = 跟随全局默认）。
+    in property <string> model-name: "";
+    in-out property <bool> model-list-open: false;
+    callback set-model(string);
+    /// 会话级记忆开关（F7）。
+    in-out property <bool> memory-enabled: true;
+    callback set-memory-enabled(bool);
+    /// 会话列表检索（F6）：标题 + 消息全文。
+    in-out property <string> search: "";
+    callback search-changed(string);
+    /// 导出当前会话为脱敏 Markdown（F6）。
+    callback export-conversation(string);
+    callback toggle-list();
+    callback new-conversation();
+    callback select-conversation(string);
+    callback close-conversation(string);
+    callback rename-conversation(string, string);
+    callback set-width(int);
     /// 工作方式：`ask` | `agent`（对应 GitHub Copilot 的对话层 / 代理层）。
     in-out property <string> mode: "ask";
     /// 补全层开关（Copilot 第一层：命令栏的幽灵文本）。
@@ -106,12 +155,68 @@ export component AiPanel inherits Rectangle {
                     color: Theme.accent;
                     vertical-alignment: center;
                 }
-                Text {
-                    text: "Copilot";
-                    color: Theme.text-primary;
-                    font-size: Theme.fs-md;
-                    vertical-alignment: center;
+                // 标题按钮：点击展开会话列表（Copilot 风格）。
+                title-btn := Rectangle {
                     horizontal-stretch: 1;
+                    height: parent.height;
+                    background: title-ta.has-hover ? Theme.bg-hover : transparent;
+                    border-radius: Theme.radius-sm;
+                    title-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.toggle-list(); }
+                    }
+                    HorizontalLayout {
+                        padding-left: 4px;
+                        spacing: 4px;
+                        Text {
+                            text: root.title;
+                            color: Theme.text-primary;
+                            font-size: Theme.fs-md;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        Text {
+                            text: root.list-open ? "\u{E5CE}" : "\u{E5CF}";
+                            font-family: "Material Icons";
+                            font-size: 14px;
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                // 模型 chip（F2）：显示这条会话锁定的模型，点开切换 / 查看全部。
+                model-chip := Rectangle {
+                    width: 96px;
+                    height: 20px;
+                    border-radius: 10px;
+                    background: root.model-list-open ? Theme.bg-active : Theme.bg-elevated;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    model-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.model-list-open = !root.model-list-open; root.list-open = false; }
+                    }
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        spacing: 2px;
+                        Text {
+                            horizontal-stretch: 1;
+                            text: root.model-name == "" ? @tr("default model") : root.model-name;
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-xs;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: root.model-list-open ? "\u{E5CE}" : "\u{E5CF}";
+                            font-family: "Material Icons";
+                            font-size: 12px;
+                            color: Theme.text-muted;
+                            vertical-alignment: center;
+                        }
+                    }
                 }
                 // Ask / Agent 模式切换（Copilot 的能力分层）。
                 ask-chip := Rectangle {
@@ -142,6 +247,32 @@ export component AiPanel inherits Rectangle {
                         text: "Agent";
                         color: root.mode == "agent" ? #ffffff : Theme.text-secondary;
                         font-size: Theme.fs-xs;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                // 新建会话（Ctrl+Shift+O）。
+                new-ta := TouchArea {
+                    width: 24px;
+                    clicked => { root.new-conversation(); }
+                    Text {
+                        text: "\u{E145}";
+                        font-family: "Material Icons";
+                        font-size: 15px;
+                        color: new-ta.has-hover ? Theme.accent : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                // 宽度两档：360 / 520（不做拖拽，见需求 D1）。
+                width-ta := TouchArea {
+                    width: 24px;
+                    clicked => { root.set-width(root.panel-width >= 520 ? 360 : 520); }
+                    Text {
+                        text: root.panel-width >= 520 ? "\u{E8A0}" : "\u{E89F}";
+                        font-family: "Material Icons";
+                        font-size: 15px;
+                        color: width-ta.has-hover ? Theme.accent : Theme.text-secondary;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
@@ -180,6 +311,214 @@ export component AiPanel inherits Rectangle {
                         color: close-ta.has-hover ? Theme.danger : Theme.text-secondary;
                         horizontal-alignment: center;
                         vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // --- 模型列表 popover（F2）----------------------------------------
+        if root.model-list-open : Rectangle {
+            height: min(220px, max(64px, root.profiles.length * 28px + 40px));
+            background: Theme.bg-elevated;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+                for p in root.profiles : Rectangle {
+                    height: 26px;
+                    background: model-row-ta.has-hover ? Theme.bg-hover : transparent;
+                    border-radius: Theme.radius-sm;
+                    model-row-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.set-model(p.name); root.model-list-open = false; }
+                    }
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        spacing: 6px;
+                        Text {
+                            text: (p.name == root.model-name || (root.model-name == "" && p.is-default)) ? "\u{E876}" : "\u{E835}";
+                            font-family: "Material Icons";
+                            font-size: 13px;
+                            color: Theme.accent;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: p.name + "  ·  " + p.model;
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-xs;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        if p.is-default : Text {
+                            text: @tr("default");
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-xs;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                if root.profiles.length == 0 : Rectangle {
+                    height: 32px;
+                    Text {
+                        x: 6px;
+                        width: parent.width - 12px;
+                        text: @tr("No model profiles yet - add them in Settings > AI Copilot");
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-xs;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // --- 会话列表 popover（Copilot 头部标题点击展开）-------------------
+        // 就地展开（不浮出面板），避免面板窄档时 popover 被裁剪。
+        if root.list-open : Rectangle {
+            height: min(320px, max(132px, root.conversations.length * 32px + 88px));
+            background: Theme.bg-elevated;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+                // 检索框（F6）：标题 + 消息全文，大小写不敏感。
+                Rectangle {
+                    height: 26px;
+                    border-radius: Theme.radius-sm;
+                    background: Theme.bg-root;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    if root.search == "" : Text {
+                        x: 6px;
+                        width: parent.width - 12px;
+                        height: parent.height;
+                        text: @tr("Search conversations");
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-xs;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    search-input := TextInput {
+                        x: 6px;
+                        width: parent.width - 12px;
+                        height: parent.height;
+                        single-line: true;
+                        font-size: Theme.fs-sm;
+                        color: Theme.text-primary;
+                        text <=> root.search;
+                        edited => { root.search-changed(root.search); }
+                    }
+                }
+                for c in root.conversations : Rectangle {
+                    height: 30px;
+                    background: row-ta.has-hover ? Theme.bg-hover : transparent;
+                    border-radius: Theme.radius-sm;
+                    row-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.select-conversation(c.id); root.list-open = false; }
+                    }
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 4px;
+                        spacing: 6px;
+                        // 状态点：running 脉冲 / interrupted / idle。
+                        Rectangle {
+                            width: 7px;
+                            height: 7px;
+                            border-radius: 4px;
+                            background: c.status == "running" ? Theme.accent
+                                : (c.status == "interrupted" ? Theme.warning : Theme.text-muted);
+                            opacity: 1;
+                            animate opacity {
+                                duration: 900ms;
+                                iteration-count: -1;
+                                direction: alternate;
+                            }
+                            states [
+                                running when c.status == "running" : {
+                                    opacity: 0.35;
+                                }
+                            ]
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 0px;
+                            Text {
+                                text: c.title;
+                                color: c.alive ? Theme.text-primary : Theme.text-muted;
+                                font-size: Theme.fs-sm;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: c.preview != "" ? c.preview
+                                    : (c.alive ? c.anchor-name : @tr("no terminal"));
+                                color: Theme.text-muted;
+                                font-size: Theme.fs-xs;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                        Text {
+                            text: c.updated;
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-xs;
+                            vertical-alignment: center;
+                        }
+                        // 导出为脱敏 Markdown（F6）。
+                        export-row-ta := TouchArea {
+                            width: 20px;
+                            clicked => { root.export-conversation(c.id); root.list-open = false; }
+                            Text {
+                                text: "\u{E2C4}";
+                                font-family: "Material Icons";
+                                font-size: 13px;
+                                color: export-row-ta.has-hover ? Theme.accent : Theme.text-muted;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        close-row-ta := TouchArea {
+                            width: 20px;
+                            clicked => { root.close-conversation(c.id); }
+                            Text {
+                                text: "\u{E5CD}";
+                                font-family: "Material Icons";
+                                font-size: 13px;
+                                color: close-row-ta.has-hover ? Theme.danger : Theme.text-muted;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+                // 底部「新建会话」。
+                new-row-ta := TouchArea {
+                    clicked => { root.new-conversation(); root.list-open = false; }
+                    new-row := Rectangle {
+                        height: 28px;
+                        background: new-row-ta.has-hover ? Theme.bg-hover : transparent;
+                        border-radius: Theme.radius-sm;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            spacing: 4px;
+                            Text {
+                                text: "\u{E145}";
+                                font-family: "Material Icons";
+                                font-size: 13px;
+                                color: Theme.accent;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: @tr("New conversation");
+                                color: Theme.text-secondary;
+                                font-size: Theme.fs-sm;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
                 }
             }
@@ -301,6 +640,33 @@ export component AiPanel inherits Rectangle {
                         }
                     }
                 }
+                // 会话级记忆注入开关（F7）：关掉后这条会话不再带用户记忆。
+                Rectangle {
+                    mem-ta := TouchArea {
+                        width: mem-row.width;
+                        height: mem-row.height;
+                        clicked => {
+                            root.memory-enabled = !root.memory-enabled;
+                            root.set-memory-enabled(root.memory-enabled);
+                        }
+                    }
+                    mem-row := HorizontalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: root.memory-enabled ? "\u{E834}" : "\u{E835}";
+                            font-family: "Material Icons";
+                            font-size: 15px;
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: @tr("Inject saved memory into this conversation");
+                            color: Theme.text-secondary;
+                            font-size: Theme.fs-sm;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
                 HorizontalLayout {
                     alignment: end;
                     spacing: 6px;
@@ -379,6 +745,15 @@ export component AiPanel inherits Rectangle {
                 if root.messages.length == 0 : VerticalLayout {
                     spacing: 6px;
                     alignment: start;
+                    // 锚点提示：会话绑定哪个终端（没有锚点就明说没有上下文）。
+                    Text {
+                        text: root.anchor-name == ""
+                            ? @tr("No terminal anchor: this conversation runs text-only")
+                            : @tr("Anchored to ") + root.anchor-name;
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-xs;
+                        wrap: word-wrap;
+                    }
                     for s in root.starters : Rectangle {
                         border-radius: Theme.radius-md;
                         background: starter-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated;

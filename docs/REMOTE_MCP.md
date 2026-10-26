@@ -38,6 +38,10 @@ Existing profile settings remain authoritative:
 - `mcp_enabled` must be enabled
 - Saved credential use requires `mcp_use_saved_credentials`
 - Arbitrary SSH commands require `mcp_allow_commands`
+
+The reverse direction — AI Copilot acting as an MCP **client** for external
+servers — is still a draft and **not implemented**; see
+[AI_MCP_CLIENT_RFC.md](AI_MCP_CLIENT_RFC.md).
 - SFTP transfers/imports require `mcp_allow_file_transfers`
 - Applying configuration imports additionally requires startup flag
   `--allow-config-import` (before `--http-config`)
