@@ -1,12 +1,19 @@
 # CNB 云原生构建流水线：镜像 .github/workflows/ci.yml 的门禁
-# （rustfmt + Clippy + 测试 + 构建检查 + npm audit）。
+# （rustfmt + Clippy + 测试 + 构建检查 + npm audit），外加 CNB 官方 SCA 安全扫描。
 # GitHub Actions 工作流只在 GitHub 侧执行；CNB 侧由本文件驱动，
 # push / PR 到 main 时自动触发（仓库设置已开 auto_trigger）。
-# 两条流水线（rust / npm-audit）并行执行，与 ci.yml 的并行 job 对齐。
+# main 块的两条流水线（rust / npm-audit）并行执行，与 ci.yml 的并行 job 对齐；
+# 末尾的 `**` 块给所有分支带来 SCA 扫描（漏洞 / License / SBOM）。
+# 平台级代码安全扫描（secrets + SCA）走仓库默认规则；这里的插件流水线额外补上
+# PR 增量门禁与全量报告，两者互补而非重复。
 #
 # Mirrors .github/workflows/ci.yml. The GitHub Actions workflows only run on
-# the GitHub side; this file drives the CNB cloud-native build. Two pipelines
-# (rust / npm-audit) run in parallel, matching ci.yml's parallel jobs.
+# the GitHub side; this file drives the CNB cloud-native build. The two main
+# pipelines (rust / npm-audit) run in parallel, matching ci.yml's parallel
+# jobs, and the trailing `**` block adds SCA scanning (vulnerability /
+# license / SBOM) to every branch. The platform-level code security scan
+# (secrets + SCA) keeps its repo defaults; these plugin pipelines add
+# incremental PR gating and full reports on top, rather than duplicating it.
 
 main:
   push:
@@ -57,3 +64,58 @@ main:
   pull_request:
     - *rust-ci
     - *npm-audit-ci
+
+# ── CNB 官方 SCA 安全扫描（漏洞 / License / SBOM）───────────────────────────
+# `**` 匹配所有分支，因此 main 之外的分支链（auto/*、m2、work-m3 …）也会被扫描，
+# 不会因为最终才 PR 到 main 就一路绕过检查。
+#
+# push 走全量扫描并上传报告，暂不设 failOnSeverity：Cargo.lock 里已有存量告警
+# （见 audit.toml 记录的 russh 豁免），先看清全貌再决定把阈值收在哪里。
+# PR 走 diff 增量模式，只拦本次新增的 High / Critical 漏洞与 High License 风险 ——
+# 同一组件同一 CVE 不会重复阻断，存量历史不会把一个无关 PR 挡在门外。
+#
+# `**` matches every branch, so long-lived branch chains (auto/*, m2,
+# work-m3, …) are scanned too instead of slipping past every check just
+# because they only open a PR against main at the very end.
+#
+# Pushes run a full scan and publish the report, with no failOnSeverity yet:
+# Cargo.lock already carries known findings (see the russh exemption in
+# audit.toml), so the backlog is reported first and gated once triaged.
+# PRs run in diff mode and gate only newly introduced High/Critical
+# vulnerabilities and High license risks - the same component/CVE pair never
+# blocks twice, so pre-existing findings cannot turn an unrelated PR red.
+"**":
+  push:
+    - name: sca-full
+      stages:
+        - name: 开源组件漏洞全量扫描
+          image: cnbcool/sca-vulnerability:latest
+          timeout: 15m
+          settings:
+            scanMode: full
+            publish: true
+        - name: License 全量扫描
+          image: cnbcool/sca-license:latest
+          timeout: 15m
+          settings:
+            scanMode: full
+            publish: true
+        - name: 生成 SBOM
+          image: cnbcool/sca-sbom:latest
+          timeout: 15m
+          settings:
+            scanMode: full
+            publish: true
+  pull_request.target:
+    - name: sca-gate
+      stages:
+        - name: 开源组件漏洞增量门禁
+          image: cnbcool/sca-vulnerability:latest
+          timeout: 15m
+          settings:
+            failOnSeverity: high
+        - name: License 增量门禁
+          image: cnbcool/sca-license:latest
+          timeout: 15m
+          settings:
+            failOnSeverity: high
