@@ -45,6 +45,53 @@ pub struct AiSkillSpec {
     pub content: String,
 }
 
+/// 没有任何 `ai_model_profiles` 时，单份设置合成的默认配置用这个名字
+/// （会话的 `model_ref` 引用的就是它）。
+pub const DEFAULT_PROFILE_NAME: &str = "default";
+
+/// AI 模型配置（F2）：设置页管理多份，其中一份是默认。
+///
+/// 与会话的关系是「创建时快照」：会话记下 `model_ref`（即这里的 `name`），
+/// 之后全局默认怎么切都不影响已经存在的会话 —— 见
+/// `docs/AI_PANEL_REQUIREMENTS.md` F2。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiModelProfileSpec {
+    /// 会话里引用的稳定标识（用户可读，改名前先确认会话不受影响）。
+    pub name: String,
+    /// `openai-completions` / `deepseek-thinking` / `anthropic-messages` / `ollama`。
+    #[serde(default)]
+    pub protocol: String,
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default)]
+    pub model: String,
+    /// 与其它 Secret 一样加密落盘；读取时已还原为明文。
+    #[serde(default)]
+    pub api_key: Secret,
+    /// 是否为全局默认（最多一份；坏数据里出现多份时取第一份）。
+    #[serde(default)]
+    pub default: bool,
+}
+
+/// AI 记忆（F7）：用户显式保存的跨会话事实 / 偏好。来源与开关见
+/// `ai_copilot::memory::MemoryRecord`。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AiMemorySpec {
+    pub id: String,
+    pub content: String,
+    /// `manual` | `ai-proposed`。
+    #[serde(default)]
+    pub source: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub created_at: String,
+}
+
+pub(crate) fn default_true() -> bool {
+    true
+}
+
 /// Ships with the "幻想 3048" sci-fi wallpaper on by default (a dark theme). New
 /// installs and users upgrading from before the wallpaper feature get it; once
 /// the user picks anything (including "无"/none, stored as ""), their choice is
@@ -377,6 +424,12 @@ pub struct ConfigFile {
     /// AI 面板宽度档位：360 | 520（其它值回落到 360）。0 = 未设置。
     #[serde(default)]
     pub ai_panel_width: u16,
+    /// 多份模型配置（F2）；为空时沿用上面的单份 `ai_*` 字段。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ai_model_profiles: Vec<AiModelProfileSpec>,
+    /// 用户显式保存的记忆（F7）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ai_memory: Vec<AiMemorySpec>,
     /// One-time default-layout migration marker (#new-user-defaults). 0 = config
     /// predates the migration. `migrate_defaults` bumps it to `DEFAULTS_REV` after
     /// pushing the new look (default wallpaper / welcome-as-sidebar / right-docked

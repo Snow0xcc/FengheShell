@@ -59,9 +59,12 @@ fn create_conversation(
     anchor: Option<String>,
 ) -> Option<String> {
     let mode = core.store.borrow().ai_mode();
+    // F2：会话创建时快照当前默认模型，之后全局默认怎么切都不影响它。
+    let model_ref = core.store.borrow().ai_default_profile().name;
     let id = {
         let mut store = core.conversations.lock().ok()?;
         let id = store.create(anchor, mode, crate::app::ai::UNTITLED_TITLE.to_string());
+        store.set_model_ref(&id, Some(model_ref));
         store.touch();
         id
     };
@@ -71,7 +74,7 @@ fn create_conversation(
 
 /// 把一条会话重放进窗口：标题、锚点、模式、消息、忙碌态、会话列表。
 fn apply_conversation(core: &AppCore, win: &Rc<AppWindow>, id: &str) {
-    let (messages, busy, mode, anchor_name, alive) = {
+    let (messages, busy, mode, anchor_name, alive, model_ref, memory_enabled) = {
         let store = match core.conversations.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
@@ -91,6 +94,8 @@ fn apply_conversation(core: &AppCore, win: &Rc<AppWindow>, id: &str) {
             conv.mode.as_str().to_string(),
             anchor_name,
             !conv.anchor_lost && conv.anchor_tab.is_some(),
+            conv.model_ref.clone().unwrap_or_default(),
+            conv.memory_enabled,
         )
     };
     win.set_ai_active_id(id.into());
@@ -101,9 +106,33 @@ fn apply_conversation(core: &AppCore, win: &Rc<AppWindow>, id: &str) {
         win.set_ai_mode(mode.into());
     }
     win.set_ai_anchor_name(anchor_name.into());
+    win.set_ai_model_name(model_ref.into());
+    win.set_ai_memory_enabled(memory_enabled);
     let _ = alive;
     refresh_header(core, win, id);
+    refresh_profiles(core, win);
     refresh_list(core, win);
+}
+
+/// 模型 chip 的可选配置（F2）：默认项排最前，其余按名字排序。
+fn refresh_profiles(core: &AppCore, win: &Rc<AppWindow>) {
+    let profiles = core.store.borrow().ai_model_profiles();
+    let default_name = core.store.borrow().ai_default_profile().name;
+    let mut rows: Vec<AiProfileInfo> = profiles
+        .iter()
+        .map(|p| AiProfileInfo {
+            name: p.name.clone().into(),
+            model: p.model.clone().into(),
+            protocol: p.protocol.clone().into(),
+            is_default: p.name == default_name,
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.is_default
+            .cmp(&a.is_default)
+            .then_with(|| a.name.as_str().cmp(b.name.as_str()))
+    });
+    win.set_ai_model_profiles(ModelRc::from(std::rc::Rc::new(VecModel::from(rows))));
 }
 
 /// 标题（会话列表里是权威的，面板头部跟着它走）。
@@ -117,27 +146,67 @@ fn refresh_header(core: &AppCore, win: &Rc<AppWindow>, id: &str) {
     win.set_ai_title(title.into());
 }
 
-/// 会话列表快照 → Slint 模型。
+/// 会话列表快照 → Slint 模型。`ai-search` 非空时按标题 + 消息全文过滤（F6）。
 fn refresh_list(core: &AppCore, win: &Rc<AppWindow>) {
+    let query = win.get_ai_search().to_string();
     let rows = {
         let store = match core.conversations.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
-        crate::app::ai_store::summaries(&store, |tab| anchor_name(core, tab))
+        crate::app::ai_store::search_summaries(&store, &query, None, |tab| anchor_name(core, tab))
     };
     let items: Vec<ConversationInfo> = rows
         .into_iter()
-        .map(|s| ConversationInfo {
-            id: s.id.into(),
-            title: s.title.into(),
-            anchor_name: s.anchor_name.into(),
-            status: s.status.as_str().into(),
-            updated: format_updated(s.updated_at).into(),
-            alive: s.anchor_alive,
+        .map(|s| {
+            let preview = if query.trim().is_empty() {
+                String::new()
+            } else {
+                match core.conversations.lock() {
+                    Ok(store) => store
+                        .get(&s.id)
+                        .and_then(|c| match_snippet(c, &query))
+                        .unwrap_or_default(),
+                    Err(_) => String::new(),
+                }
+            };
+            ConversationInfo {
+                id: s.id.into(),
+                title: s.title.into(),
+                anchor_name: s.anchor_name.into(),
+                status: s.status.as_str().into(),
+                updated: format_updated(s.updated_at).into(),
+                alive: s.anchor_alive,
+                preview: preview.into(),
+            }
         })
         .collect();
     win.set_ai_conversations(ModelRc::from(std::rc::Rc::new(VecModel::from(items))));
+}
+
+/// 检索命中位置附近的一小段原文，给列表行做「为什么它跳出来了」的提示。
+fn match_snippet(conv: &crate::app::ai_store::Conversation, query: &str) -> Option<String> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return None;
+    }
+    for m in &conv.messages {
+        for field in [&m.text, &m.cmd, &m.explain] {
+            let hay = field.to_lowercase();
+            let Some(pos) = hay.find(&needle) else {
+                continue;
+            };
+            // 命中点前后各留一点上下文；按字节切片不安全，先按字符定位。
+            let start = hay[..pos].chars().count().saturating_sub(12);
+            let take = needle.chars().count() + 40;
+            let snippet: String = field.chars().skip(start).take(take).collect();
+            let trimmed = snippet.trim().to_string();
+            if !trimmed.is_empty() {
+                return Some(format!("…{trimmed}…"));
+            }
+        }
+    }
+    None
 }
 
 /// 锚点名：标签标题里人认得的那一段（`name` 优先，退到 id）。
@@ -208,9 +277,11 @@ fn set_panel_open(core: &AppCore, win: &Rc<AppWindow>, open: bool) {
             Ok(g) => g,
             Err(e) => e.into_inner(),
         };
+        let model_ref = core.store.borrow().ai_default_profile().name;
         let id = store.create(anchor, mode, reason.clone());
         if let Some(conv) = store.get_mut(&id) {
             conv.trigger = Some(crate::app::ai_store::TriggerTag::Monitor);
+            conv.model_ref = Some(model_ref);
         }
         store.touch();
         id
@@ -302,23 +373,41 @@ fn model_default(protocol: &str) -> &'static str {
     }
 }
 
-fn ai_config(store: &Rc<RefCell<ConfigStore>>, shell: ShellKind) -> CopilotConfig {
+/// 组装一轮的 LLM 配置。
+///
+/// `profile` = Some(name) 时会话按创建时锁定的模型跑（F2）；解析不到就回落到
+/// 全局默认，调用方会在面板里给出提示。`memories` 为 None 表示这条会话关掉了
+/// 记忆注入（F7）。
+fn ai_config(
+    store: &Rc<RefCell<ConfigStore>>,
+    shell: ShellKind,
+    profile: Option<&str>,
+    memories: Option<Vec<ai_copilot::memory::MemoryRecord>>,
+) -> CopilotConfig {
     let s = store.borrow();
-    let protocol = s.ai_protocol();
-    let endpoint = if s.ai_endpoint().trim().is_empty() {
-        endpoint_default(protocol).to_string()
+    let picked = profile
+        .and_then(|name| s.ai_profile_by_name(name))
+        .unwrap_or_else(|| s.ai_default_profile());
+    let protocol = picked.protocol.trim().to_string();
+    let protocol = if protocol.is_empty() {
+        "openai-completions".to_string()
     } else {
-        s.ai_endpoint().to_string()
+        protocol
     };
-    let model = if s.ai_model().trim().is_empty() {
-        model_default(protocol).to_string()
+    let endpoint = if picked.endpoint.trim().is_empty() {
+        endpoint_default(&protocol).to_string()
     } else {
-        s.ai_model().to_string()
+        picked.endpoint.trim().to_string()
+    };
+    let model = if picked.model.trim().is_empty() {
+        model_default(&protocol).to_string()
+    } else {
+        picked.model.trim().to_string()
     };
     CopilotConfig {
-        protocol: protocol.to_string(),
+        protocol,
         endpoint,
-        api_key: s.ai_api_key().to_string(),
+        api_key: picked.api_key.as_str().to_string(),
         model,
         shell,
         redaction_enabled: s.ai_redaction_enabled(),
@@ -327,7 +416,19 @@ fn ai_config(store: &Rc<RefCell<ConfigStore>>, shell: ShellKind) -> CopilotConfi
         locale: crate::i18n::current_code().to_string(),
         mode: s.ai_mode(),
         skills: s.ai_skills(),
+        memories: memories.unwrap_or_default(),
     }
+}
+
+/// 起一轮时这一份记忆：会话关掉注入就是空的，否则用全局启用项（F7）。
+fn conversation_memories(
+    store: &Rc<RefCell<ConfigStore>>,
+    memory_enabled: bool,
+) -> Option<Vec<ai_copilot::memory::MemoryRecord>> {
+    if !memory_enabled {
+        return None;
+    }
+    Some(store.borrow().ai_active_memory())
 }
 
 /// 起一轮 Triage。UI 只负责打包上下文，之后全部异步进行。
@@ -340,7 +441,7 @@ fn ask_question(
 ) {
     let conversations = core.conversations.clone();
     // 本轮要用的锚点、忙碌态、当前模式先取一份快照（短临界区）。
-    let (anchor, busy, mode, title) = {
+    let (anchor, busy, mode, title, model_ref, memory_enabled) = {
         let store = match conversations.lock() {
             Ok(g) => g,
             Err(e) => e.into_inner(),
@@ -353,6 +454,8 @@ fn ask_question(
             conv.is_busy(),
             conv.mode,
             conv.title.clone(),
+            conv.model_ref.clone(),
+            conv.memory_enabled,
         )
     };
     let _ = title;
@@ -409,7 +512,13 @@ fn ask_question(
         .map(|(s, j)| (Some(s), j))
         .unwrap_or((None, Vec::new()));
     let shell = shell_kind(session.as_ref());
-    let mut cfg = ai_config(&store, shell);
+    // 会话级模型（F2）与记忆开关（F7）：都按会话自己的快照来，不看全局默认。
+    let mut cfg = ai_config(
+        &store,
+        shell,
+        model_ref.as_deref(),
+        conversation_memories(&store, memory_enabled),
+    );
     // 会话级模式（F3）：这一轮按会话自己的 ask/agent 跑，不看全局默认。
     cfg.mode = mode;
     let local = local_snapshot(core);
@@ -646,7 +755,7 @@ pub(super) fn wire_ai(ctx: &WinCtx) {
                 return;
             }
             let prefix_s = prefix.to_string();
-            let cfg = ai_config(&store, ShellKind::Posix);
+            let cfg = ai_config(&store, ShellKind::Posix, None, None);
             // 带上这个标签最近跑过的几条命令，补全才能贴合当前在做什么。
             let recent_commands = ctx
                 .lock()
@@ -741,9 +850,8 @@ pub(super) fn wire_ai(ctx: &WinCtx) {
             }
             let id = win.get_ai_active_id().to_string();
             if let Ok(mut convs) = core.conversations.lock() {
-                if let Some(conv) = convs.get_mut(&id) {
-                    conv.mode = parsed;
-                    conv.updated_at = chrono::Utc::now();
+                if !convs.set_mode(&id, parsed) {
+                    // 还没有会话（面板空态）：只改默认模式，等会话建好再锁进来。
                 }
                 convs.touch();
             }
@@ -852,16 +960,125 @@ pub(super) fn wire_ai(ctx: &WinCtx) {
                     Ok(g) => g,
                     Err(e) => e.into_inner(),
                 };
-                if let Some(conv) = convs.get_mut(&id) {
-                    conv.title = name.clone();
-                    conv.updated_at = chrono::Utc::now();
-                }
+                convs.rename(&id, &name);
                 convs.touch();
             }
             refresh_list(&core, &win);
             if win.get_ai_active_id().as_str() == id.as_str() {
                 win.set_ai_title(name.into());
             }
+        });
+    }
+    // --- 会话级模型（F2）：只影响之后发起的轮次 ---------------------------
+    {
+        let core = core.clone();
+        let win = window.clone();
+        window.on_ai_set_model(move |name: SharedString| {
+            let id = win.get_ai_active_id().to_string();
+            if id.is_empty() {
+                return;
+            }
+            {
+                let mut convs = match core.conversations.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                convs.set_model_ref(&id, Some(name.to_string()));
+                convs.touch();
+            }
+            win.set_ai_model_name(name.clone());
+            win.set_ai_model_list_open(false);
+            push_notice(
+                &core.conversations,
+                &win.as_weak(),
+                &id,
+                ROLE_ASSISTANT,
+                &if crate::i18n::is_en() {
+                    format!("Model locked to `{}` for the next rounds.", name.as_str())
+                } else {
+                    format!("后续轮次改用模型 `{}`。", name.as_str())
+                },
+            );
+        });
+    }
+    // --- 会话级记忆开关（F7）---------------------------------------------
+    {
+        let core = core.clone();
+        let win = window.clone();
+        window.on_ai_set_memory_enabled(move |enabled: bool| {
+            let id = win.get_ai_active_id().to_string();
+            win.set_ai_memory_enabled(enabled);
+            if id.is_empty() {
+                return;
+            }
+            let mut convs = match core.conversations.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            convs.set_memory_enabled(&id, enabled);
+            convs.touch();
+        });
+    }
+    // --- 历史检索（F6）----------------------------------------------------
+    {
+        let core = core.clone();
+        let win = window.clone();
+        window.on_ai_search_changed(move |_query: SharedString| {
+            refresh_list(&core, &win);
+        });
+    }
+    // --- 导出会话（F6）：脱敏 Markdown，按敏感文件保管 --------------------
+    {
+        let core = core.clone();
+        let win = window.clone();
+        window.on_ai_export_conversation(move |id: SharedString| {
+            let markdown = {
+                let store = match core.conversations.lock() {
+                    Ok(g) => g,
+                    Err(e) => e.into_inner(),
+                };
+                store.get(&id).map(|conv| {
+                    let redactor = ai_copilot::redact::IndexedRedactor::builtin();
+                    (
+                        crate::app::ai_store::export_markdown(conv, &redactor),
+                        conv.title.clone(),
+                    )
+                })
+            };
+            let Some((markdown, title)) = markdown else {
+                return;
+            };
+            let safe: String = title
+                .chars()
+                .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                .take(40)
+                .collect();
+            let default_name = format!("fengheshell-ai-{}.md", safe.trim_matches('-'));
+            win.set_ai_list_open(false);
+            let Some(path) = DialogOwner::of_weak(&win.as_weak())
+                .file()
+                .set_file_name(&default_name)
+                .add_filter("Markdown", &["md", "txt"])
+                .save_file()
+            else {
+                return;
+            };
+            let (heading, body): (&str, String) = match std::fs::write(&path, markdown) {
+                Ok(()) => (
+                    crate::i18n::t("已导出会话", "Conversation exported"),
+                    crate::i18n::t(
+                        "导出文件已按脱敏规则处理，仍可能含运维细节，请按敏感文件保管。",
+                        "The export went through the local redaction rules; it may still contain operational details - treat it as sensitive.",
+                    )
+                    .to_string(),
+                ),
+                Err(e) => (crate::i18n::t("导出失败", "Export failed"), e.to_string()),
+            };
+            DialogOwner::of_weak(&win.as_weak())
+                .message()
+                .set_title(heading)
+                .set_description(body)
+                .show();
         });
     }
     {

@@ -34,6 +34,32 @@ export struct CustomAgentInfo {
     directory: string,
 }
 
+// 一份模型配置（F2）：会话 chips 引用的是 name，不是 model。
+export struct AiProfileRow {
+    name: string,
+    protocol: string,
+    endpoint: string,
+    model: string,
+    is-default: bool,
+}
+
+// 一条记忆（F7）。
+export struct AiMemoryRow {
+    id: string,
+    content: string,
+    source: string,        // manual | ai-proposed
+    enabled: bool,
+    created: string,
+}
+
+// 一个用户技能（F8）。
+export struct AiSkillRow {
+    id: string,
+    name: string,
+    description: string,
+    content: string,
+}
+
 // One left-nav row (icon + label).
 component NavItem inherits Rectangle {
     in property <string> icon;
@@ -432,10 +458,53 @@ export component InterfacePanel inherits Rectangle {
     callback ai-set-yolo(bool);
     callback ai-apply-settings(string, string, string, string, bool, bool);
     callback ai-export-audit();
+    // --- 模型配置 / 记忆 / 技能 / 并发（M2：F2 F7 F8 D3）----------------
+    in-out property <[AiProfileRow]> ai-profiles: [];
+    in-out property <string> ai-profile-edit: "";      // 正在编辑的名字（空 = 新建）
+    in-out property <string> ai-profile-name: "";
+    in-out property <string> ai-profile-protocol: "openai-completions";
+    in-out property <string> ai-profile-endpoint: "";
+    in-out property <string> ai-profile-model: "";
+    in-out property <string> ai-profile-key: "";
+    in-out property <bool> ai-profile-default: false;
+    in-out property <string> ai-profile-status: "";
+    callback ai-save-profile(string, string, string, string, string, string, bool);
+    callback ai-delete-profile(string);
+    callback ai-edit-profile(string);
+    callback ai-clear-profile-form();
+
+    in-out property <[AiMemoryRow]> ai-memories: [];
+    in-out property <string> ai-memory-edit: "";
+    in-out property <string> ai-memory-draft: "";
+    in-out property <string> ai-memory-status: "";
+    callback ai-save-memory(string, string);
+    callback ai-delete-memory(string);
+    callback ai-toggle-memory(string, bool);
+    callback ai-clear-memories();
+    callback ai-edit-memory(string);
+
+    in-out property <[AiSkillRow]> ai-skill-rows: [];
+    in-out property <string> ai-skill-edit: "";
+    in-out property <string> ai-skill-id: "";
+    in-out property <string> ai-skill-name: "";
+    in-out property <string> ai-skill-desc: "";
+    in-out property <string> ai-skill-content: "";
+    in-out property <string> ai-skill-status: "";
+    callback ai-save-skill(string, string, string, string, string);
+    callback ai-delete-skill(string);
+    callback ai-edit-skill(string);
+    callback ai-clear-skill-form();
+
+    /// 同时运行的会话上限（D3：1–5，默认 3）。
+    in-out property <int> ai-max-parallel: 3;
+    callback set-ai-max-parallel(int);
+    /// 内置 MCP Server 的 stdio 启动命令 / 文档入口（F9-P1）。
+    callback open-mcp-docs();
     in-out property <bool> mcp-enabled: true;
     in-out property <bool> mcp-use-saved-credentials: true;
     in-out property <bool> mcp-allow-commands: true;
     in-out property <bool> mcp-allow-file-transfers: true;
+    in property <string> mcp-status: "";
     in-out property <float> wallpaper-overlay;   // frosted-panel opacity 0.30-1.00
     // Active wallpaper id: "" / "builtin:light" / "builtin:dark" / a file path.
     in property <string> current-wallpaper;
@@ -598,6 +667,21 @@ export component InterfacePanel inherits Rectangle {
                     icon: "\u{E873}"; label: root.lang-en ? "Session log" : "会话日志";
                     active: root.ifd-page == "session-log";
                     clicked => { root.ifd-page = "session-log"; }
+                }
+                NavItem {
+                    icon: "\u{E30A}"; label: root.lang-en ? "AI models" : "模型配置";
+                    active: root.ifd-page == "ai-models";
+                    clicked => { root.ifd-page = "ai-models"; }
+                }
+                NavItem {
+                    icon: "\u{E254}"; label: root.lang-en ? "AI memory" : "记忆";
+                    active: root.ifd-page == "ai-memory";
+                    clicked => { root.ifd-page = "ai-memory"; }
+                }
+                NavItem {
+                    icon: "\u{E0F0}"; label: root.lang-en ? "AI skills" : "技能";
+                    active: root.ifd-page == "ai-skills";
+                    clicked => { root.ifd-page = "ai-skills"; }
                 }
                 NavItem {
                     icon: "\u{E335}"; label: "MCP";
@@ -1622,6 +1706,34 @@ export component InterfacePanel inherits Rectangle {
                         toggled(v) => { root.ai-yolo-mode = v; root.ai-set-yolo(v); }
                     }
                 }
+                // 并发上限（D3）：同时运行的会话数，满了发送即提示、不排队。
+                SettingRow {
+                    label: root.lang-en ? "Concurrent conversations" : "并行会话上限";
+                    desc: root.lang-en
+                        ? "How many conversations may run at once (1–5). The send button refuses beyond this instead of queueing."
+                        : "同时最多几条会话在跑（1–5）。超出后发送按钮直接拒绝，不排队。";
+                    HorizontalLayout {
+                        spacing: 6px;
+                        for n in [1, 2, 3, 4, 5] : Rectangle {
+                            width: 26px;
+                            height: 22px;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: root.ai-max-parallel == n ? Theme.accent : Theme.border-subtle;
+                            background: root.ai-max-parallel == n ? Theme.accent.with-alpha(0.15) : Theme.bg-elevated;
+                            par-ta := TouchArea {
+                                clicked => { root.ai-max-parallel = n; root.set-ai-max-parallel(n); }
+                            }
+                            Text {
+                                text: n;
+                                color: root.ai-max-parallel == n ? Theme.accent : Theme.text-secondary;
+                                font-size: 12px * Theme.panel-font;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
                 HorizontalLayout {
                     spacing: 8px;
                     alignment: end;
@@ -1647,6 +1759,327 @@ export component InterfacePanel inherits Rectangle {
                         ? "Stored in the regular config file; the API key is encrypted like every other saved secret. Open the drawer with the AI pill on the terminal status strip or Ctrl+Space. Every diagnosis round is recorded in an in-memory audit log (proposals, approvals, executions, web tools) - export it here as a text file."
                         : "设置保存在常规配置文件中，API Key 与其它密码一样加密存储。终端状态条上的 AI 按钮或 Ctrl+Space 可打开抽屉。每轮诊断都会记录进内存审计日志（命令提议、审批、执行、Web 工具）—— 可在此导出为文本文件。";
                     color: Theme.text-muted;
+                    font-size: 11px * Theme.panel-font;
+                    wrap: word-wrap;
+                }
+            }
+
+            // --- AI models page (F2) -----------------------------------
+            if root.ifd-page == "ai-models" : VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 14px;
+                spacing: 10px;
+                alignment: start;
+                SectionHeader { text: "MODELS"; height: 24px; }
+                Text {
+                    text: root.lang-en
+                        ? "Keep several model configurations and pick one per conversation. A conversation locks the model it was created with, so changing the default never rewrites history."
+                        : "可以保存多份模型配置，每条会话自己选一份。会话创建时锁定当时的默认模型，之后改默认不会影响已有会话。";
+                    color: Theme.text-muted;
+                    font-size: 11px * Theme.panel-font;
+                    wrap: word-wrap;
+                }
+                for p in root.ai-profiles : Rectangle {
+                    height: 56px;
+                    border-radius: Theme.radius-sm;
+                    background: Theme.bg-elevated;
+                    HorizontalLayout {
+                        padding-left: 10px; padding-right: 8px; spacing: 8px;
+                        VerticalLayout {
+                            horizontal-stretch: 1; alignment: center; spacing: 2px;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text { text: p.name; color: Theme.text-primary; font-size: 13px * Theme.panel-font; }
+                                if p.is-default : Text {
+                                    text: root.lang-en ? "default" : "默认";
+                                    color: Theme.accent; font-size: 11px * Theme.panel-font;
+                                }
+                            }
+                            Text {
+                                text: p.protocol + "  ·  " + p.model + "  ·  " + p.endpoint;
+                                color: Theme.text-muted; font-size: 11px * Theme.panel-font; overflow: elide;
+                            }
+                        }
+                        GhostButton {
+                            text: root.lang-en ? "Edit" : "编辑";
+                            clicked => { root.ai-edit-profile(p.name); }
+                        }
+                        GhostButton {
+                            text: root.lang-en ? "Remove" : "删除";
+                            clicked => { root.ai-delete-profile(p.name); }
+                        }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+                SectionHeader {
+                    height: 20px;
+                    text: root.ai-profile-edit == ""
+                        ? (root.lang-en ? "NEW PROFILE" : "新建配置")
+                        : (root.lang-en ? "EDITING" : "正在编辑") + " " + root.ai-profile-edit;
+                }
+                LabeledInput {
+                    label: root.lang-en ? "Name (used by conversations)" : "名称（会话引用的就是它）";
+                    placeholder: "deepseek-default";
+                    value <=> root.ai-profile-name;
+                }
+                LabeledInput {
+                    label: root.lang-en ? "Protocol" : "协议";
+                    placeholder: "openai-completions | deepseek-thinking | anthropic-messages | ollama";
+                    value <=> root.ai-profile-protocol;
+                }
+                LabeledInput {
+                    label: root.lang-en ? "Endpoint" : "端点";
+                    placeholder: "https://api.openai.com/v1";
+                    value <=> root.ai-profile-endpoint;
+                }
+                LabeledInput {
+                    label: root.lang-en ? "Model" : "模型";
+                    placeholder: "gpt-4o-mini";
+                    value <=> root.ai-profile-model;
+                }
+                LabeledInput {
+                    label: root.lang-en ? "API key (blank keeps the stored one)" : "API Key（留空沿用已保存的密钥）";
+                    placeholder: "sk-...";
+                    password: true;
+                    reveal-enabled: true;
+                    value <=> root.ai-profile-key;
+                }
+                SettingRow {
+                    label: root.lang-en ? "Use as default" : "设为默认";
+                    desc: root.lang-en
+                        ? "New conversations snapshot this profile; existing ones keep theirs."
+                        : "新会话会快照这份配置；已有会话保持原样。";
+                    show-divider: false;
+                    Switch {
+                        on: root.ai-profile-default;
+                        toggled(v) => { root.ai-profile-default = v; }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    GhostButton {
+                        text: root.lang-en ? "Clear" : "清空表单";
+                        clicked => { root.ai-clear-profile-form(); }
+                    }
+                    PrimaryButton {
+                        text: root.lang-en ? "Save profile" : "保存配置";
+                        clicked => {
+                            root.ai-save-profile(
+                                root.ai-profile-edit, root.ai-profile-name,
+                                root.ai-profile-protocol, root.ai-profile-endpoint,
+                                root.ai-profile-model, root.ai-profile-key,
+                                root.ai-profile-default);
+                            root.ai-profile-key = "";
+                        }
+                    }
+                }
+                if root.ai-profile-status != "" : Text {
+                    text: root.ai-profile-status;
+                    color: Theme.text-secondary;
+                    font-size: 11px * Theme.panel-font;
+                    wrap: word-wrap;
+                }
+            }
+
+            // --- AI memory page (F7) -----------------------------------
+            if root.ifd-page == "ai-memory" : VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 14px;
+                spacing: 10px;
+                alignment: start;
+                SectionHeader { text: "MEMORY"; height: 24px; }
+                Text {
+                    text: root.lang-en
+                        ? "Facts and preferences injected into every conversation's system prompt (redacted before they leave this machine). Nothing is memorised automatically - you add it, or you confirm an AI proposal."
+                        : "这里的事实与偏好会注入到每条会话的系统提示里（离开本机前过脱敏规则）。不会自动记忆：要么你自己写，要么你在面板里确认 AI 的提议。";
+                    color: Theme.text-muted;
+                    font-size: 11px * Theme.panel-font;
+                    wrap: word-wrap;
+                }
+                LabeledInput {
+                    label: root.lang-en ? "Memory" : "记忆内容";
+                    placeholder: root.lang-en ? "Never run kubectl delete on prod" : "生产集群禁执行 kubectl delete";
+                    value <=> root.ai-memory-draft;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    GhostButton {
+                        text: root.lang-en ? "Clear all" : "全部清除";
+                        clicked => { root.ai-clear-memories(); }
+                    }
+                    PrimaryButton {
+                        text: root.ai-memory-edit == ""
+                            ? (root.lang-en ? "Add" : "新增")
+                            : (root.lang-en ? "Update" : "更新");
+                        clicked => {
+                            root.ai-save-memory(root.ai-memory-edit, root.ai-memory-draft);
+                            root.ai-memory-draft = "";
+                        }
+                    }
+                }
+                if root.ai-memory-status != "" : Text {
+                    text: root.ai-memory-status;
+                    color: Theme.text-secondary;
+                    font-size: 11px * Theme.panel-font;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+                for m in root.ai-memories : Rectangle {
+                    height: max(56px, mem-col.preferred-height + 18px);
+                    border-radius: Theme.radius-sm;
+                    background: Theme.bg-elevated;
+                    HorizontalLayout {
+                        padding-left: 10px; padding-right: 8px; spacing: 8px;
+                        mem-ta := TouchArea {
+                            width: 20px;
+                            clicked => { root.ai-edit-memory(m.id); }
+                            Text {
+                                text: "\u{E254}";
+                                font-family: "Material Icons";
+                                font-size: 14px;
+                                color: mem-ta.has-hover ? Theme.accent : Theme.text-muted;
+                                vertical-alignment: center;
+                            }
+                        }
+                        mem-col := VerticalLayout {
+                            horizontal-stretch: 1; alignment: center; spacing: 2px;
+                            Text {
+                                text: m.content;
+                                color: m.enabled ? Theme.text-primary : Theme.text-muted;
+                                font-size: 12px * Theme.panel-font;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: m.source + "  ·  " + m.created;
+                                color: Theme.text-muted; font-size: 11px * Theme.panel-font; overflow: elide;
+                            }
+                        }
+                        Switch {
+                            on: m.enabled;
+                            toggled(v) => { root.ai-toggle-memory(m.id, v); }
+                        }
+                        GhostButton {
+                            text: root.lang-en ? "Remove" : "删除";
+                            clicked => { root.ai-delete-memory(m.id); }
+                        }
+                    }
+                }
+                if root.ai-memories.length == 0 : Text {
+                    text: root.lang-en ? "No saved memory yet." : "还没有保存任何记忆。";
+                    color: Theme.text-muted;
+                    font-size: 11px * Theme.panel-font;
+                }
+            }
+
+            // --- AI skills page (F8) -----------------------------------
+            if root.ifd-page == "ai-skills" : VerticalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                padding-top: 14px;
+                spacing: 10px;
+                alignment: start;
+                SectionHeader { text: "SKILLS"; height: 24px; }
+                Text {
+                    text: root.lang-en
+                        ? "The built-in `general` rule set is always active. Extra skills are listed as a catalog and pulled in on demand with load_skill(id). id must be unique and is not allowed to be `general`; content is capped at 8 KB."
+                        : "内置 `general` 规则集始终生效。额外技能只进目录，模型按需用 load_skill(id) 拉全文。id 必须唯一且不能是 `general`；内容上限 8 KB。";
+                    color: Theme.text-muted;
+                    font-size: 11px * Theme.panel-font;
+                    wrap: word-wrap;
+                }
+                for sk in root.ai-skill-rows : Rectangle {
+                    height: 56px;
+                    border-radius: Theme.radius-sm;
+                    background: Theme.bg-elevated;
+                    HorizontalLayout {
+                        padding-left: 10px; padding-right: 8px; spacing: 8px;
+                        VerticalLayout {
+                            horizontal-stretch: 1; alignment: center; spacing: 2px;
+                            Text { text: sk.name + "  (" + sk.id + ")"; color: Theme.text-primary; font-size: 13px * Theme.panel-font; }
+                            Text {
+                                text: sk.description == "" ? (root.lang-en ? "(no description)" : "（无描述）") : sk.description;
+                                color: Theme.text-muted; font-size: 11px * Theme.panel-font; overflow: elide;
+                            }
+                        }
+                        GhostButton {
+                            text: root.lang-en ? "Edit" : "编辑";
+                            clicked => { root.ai-edit-skill(sk.id); }
+                        }
+                        GhostButton {
+                            text: root.lang-en ? "Remove" : "删除";
+                            clicked => { root.ai-delete-skill(sk.id); }
+                        }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+                SectionHeader {
+                    height: 20px;
+                    text: root.ai-skill-edit == ""
+                        ? (root.lang-en ? "NEW SKILL" : "新建技能")
+                        : (root.lang-en ? "EDITING" : "正在编辑") + " " + root.ai-skill-edit;
+                }
+                LabeledInput {
+                    label: root.lang-en ? "id (unique, not `general`)" : "id（唯一，不能是 general）";
+                    placeholder: "user-mysql";
+                    value <=> root.ai-skill-id;
+                }
+                LabeledInput {
+                    label: root.lang-en ? "Name" : "名称";
+                    placeholder: "MySQL slow query";
+                    value <=> root.ai-skill-name;
+                }
+                LabeledInput {
+                    label: root.lang-en ? "One-line description" : "一句话描述";
+                    placeholder: root.lang-en ? "Slow query triage flow" : "慢查询排查流程";
+                    value <=> root.ai-skill-desc;
+                }
+                VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: root.lang-en ? "Content (max 8 KB)" : "内容（上限 8 KB）";
+                        color: Theme.text-secondary; font-size: 11px * Theme.panel-font;
+                    }
+                    Rectangle {
+                        height: 150px;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        background: Theme.bg-root;
+                        skill-input := TextInput {
+                            x: 8px; y: 4px;
+                            width: parent.width - 16px;
+                            height: parent.height - 8px;
+                            single-line: false;
+                            wrap: word-wrap;
+                            font-size: Theme.fs-sm;
+                            color: Theme.text-primary;
+                            text <=> root.ai-skill-content;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    GhostButton {
+                        text: root.lang-en ? "Clear" : "清空表单";
+                        clicked => { root.ai-clear-skill-form(); }
+                    }
+                    PrimaryButton {
+                        text: root.lang-en ? "Save skill" : "保存技能";
+                        clicked => {
+                            root.ai-save-skill(root.ai-skill-edit, root.ai-skill-id,
+                                root.ai-skill-name, root.ai-skill-desc,
+                                root.ai-skill-content);
+                        }
+                    }
+                }
+                if root.ai-skill-status != "" : Text {
+                    text: root.ai-skill-status;
+                    color: Theme.text-secondary;
                     font-size: 11px * Theme.panel-font;
                     wrap: word-wrap;
                 }
@@ -1957,6 +2390,15 @@ export component InterfacePanel inherits Rectangle {
                         }
                     }
                 }
+                // F9-P1：文档入口（协议与权限说明不在设置页里复述）。
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    GhostButton {
+                        text: root.lang-en ? "MCP guide (docs/REMOTE_MCP.md)" : "MCP 说明（docs/REMOTE_MCP.md）";
+                        clicked => { root.open-mcp-docs(); }
+                    }
+                }
                 // Per-session MCP scope lives in the session editor (#432).
                 Rectangle { height: 10px; }
                 Text {
@@ -1968,13 +2410,13 @@ export component InterfacePanel inherits Rectangle {
                     wrap: word-wrap;
                 }
                 Rectangle { height: 18px; }
+                // F9-P1 状态：配置位置 + 传输方式（只读，值由 Rust 侧算出）。
                 Text {
-                    text: root.lang-en
-                        ? "Command: fengheshell mcp serve\nTransport: stdio (local process only)"
-                        : "启动命令：fengheshell mcp serve\n传输方式：stdio（仅本机进程）";
+                    text: root.mcp-status;
                     color: Theme.text-muted;
                     font-family: Theme.term-font-family;
                     font-size: 12px * Theme.panel-font;
+                    wrap: word-wrap;
                 }
             }
 

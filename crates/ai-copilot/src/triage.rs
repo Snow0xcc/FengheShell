@@ -170,6 +170,9 @@ pub struct CopilotConfig {
     /// 用户自定义 Skill（`general` 内置，不在这里）。宿主从配置快照进来，
     /// 空 Vec = 不暴露 `load_skill`、system prompt 不带目录段。
     pub skills: Vec<SkillRecord>,
+    /// 用户显式保存的记忆（F7）。宿主按会话开关决定是否填这个字段：
+    /// 空 Vec = 不注入「User memory」段落。
+    pub memories: Vec<crate::memory::MemoryRecord>,
 }
 
 impl Default for CopilotConfig {
@@ -186,6 +189,7 @@ impl Default for CopilotConfig {
             locale: "zh-CN".into(),
             mode: CopilotMode::default(),
             skills: Vec::new(),
+            memories: Vec::new(),
         }
     }
 }
@@ -843,6 +847,13 @@ impl TriageEngine {
         }
         // 用户自定义 Skill 目录（没有用户 Skill 时是空串）。
         s.push_str(&skills::catalog_section(&self.cfg.skills));
+        // 用户显式保存的记忆（F7）：关闭脱敏时不额外处理，否则每条先过规则。
+        let redactor = self
+            .cfg
+            .redaction_enabled
+            .then_some(&self.redactor)
+            .filter(|_| !self.cfg.yolo);
+        s.push_str(&crate::memory::render_section(&self.cfg.memories, redactor));
         s
     }
 
@@ -2105,6 +2116,66 @@ mod tests {
             audit: Mutex::new(AuditLog::default()),
             audit_sink: None,
         }
+    }
+
+    #[test]
+    fn system_prompt_carries_user_memory_and_skills() {
+        let rt = Arc::new(MockRuntime::default());
+        let mut eng = engine(vec![resp_final("ok")], rt);
+        eng.cfg.memories = vec![crate::memory::MemoryRecord::new(
+            "m1",
+            "生产集群禁执行 kubectl delete",
+            crate::memory::MemorySource::Manual,
+        )];
+        eng.cfg.skills = vec![crate::skills::SkillRecord {
+            id: "user-mysql".into(),
+            name: "MySQL".into(),
+            description: "慢查询".into(),
+            content: "show full processlist".into(),
+            builtin: false,
+        }];
+        let ctx = TriageContext {
+            question: "为什么慢".into(),
+            blocks: Vec::new(),
+            system: None,
+            shell: ShellKind::default(),
+            trigger: Trigger::User,
+            target: None,
+        };
+        let prompt = eng.build_system_prompt(&ctx);
+        assert!(prompt.contains("User memory"));
+        assert!(prompt.contains("生产集群禁执行 kubectl delete"));
+        assert!(prompt.contains("user-mysql"));
+        // 记忆里的敏感值也过脱敏。
+        eng.cfg.memories = vec![crate::memory::MemoryRecord::new(
+            "m2",
+            "跳板机 10.1.2.3",
+            crate::memory::MemorySource::Manual,
+        )];
+        let prompt = eng.build_system_prompt(&ctx);
+        assert!(!prompt.contains("10.1.2.3"), "private IP leaked: {prompt}");
+    }
+
+    #[test]
+    fn disabled_memory_is_not_injected() {
+        let rt = Arc::new(MockRuntime::default());
+        let mut eng = engine(vec![resp_final("ok")], rt);
+        let mut m = crate::memory::MemoryRecord::new(
+            "m1",
+            "别动生产库",
+            crate::memory::MemorySource::Manual,
+        );
+        m.enabled = false;
+        eng.cfg.memories = vec![m];
+        let ctx = TriageContext {
+            question: "q".into(),
+            blocks: Vec::new(),
+            system: None,
+            shell: ShellKind::default(),
+            trigger: Trigger::User,
+            target: None,
+        };
+        assert!(!eng.build_system_prompt(&ctx).contains("User memory"));
     }
 
     #[tokio::test]
