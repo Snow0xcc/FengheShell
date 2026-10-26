@@ -3,6 +3,12 @@
 > 对应 [AI_PANEL_REQUIREMENTS.md](AI_PANEL_REQUIREMENTS.md) 的 **M1 / F1 / F4 / F5**。
 > 本文只回答「怎么落」：目标架构、工作包、PR 切片、测试与风险；不重复需求背景。
 > 范围外：F2 模型多配置、F3 会话级模式、F6 历史搜索、F7 记忆、F8 技能 UI、F9 MCP。
+>
+> **状态（2026-10-27）：M1 已随 !2 合入 `main`**（merge commit `fd2911b`），`main` 门禁
+> （fmt / clippy / `cargo test --workspace` / build）全绿。§0 的「现状」列是**改造前**的
+> 基线，不再描述当前代码。§5 的 DoD 未逐条勾选：单测覆盖到的项已完成，**WP8 手工矩阵**
+> （多平台 / 中文 IME / htop 全屏 / 分屏 / 多窗口拖 tab / 睡眠唤醒）尚未执行，对应需求
+> 文档 §6.1 的 P1-N4。
 
 ---
 

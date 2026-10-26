@@ -78,10 +78,12 @@ M2 把「只能在 JSON 里手改的东西」搬进了设置页，也给会话�
 | 历史检索 | 面板会话列表的检索框 | 标题 + 消息全文大小写不敏感匹配，列表行显示命中片段 |
 | 会话导出 | 会话列表行尾的导出按钮 | 脱敏后的 Markdown（含命令卡片的风险 / 闸门 / 处置、Agent 计划与步骤痕迹），按敏感文件保管 |
 | 并发上限 | 设置 → Interface → AI Copilot 页 | 1–5 档，写 `ai_max_parallel`，超出后发送即拒绝、不排队 |
-| 内置 MCP | 设置 → Interface → MCP 页 | 开关与权限矩阵（原有），新增文档入口（`docs/REMOTE_MCP.md`） |
+| 内置 MCP | 设置 → Interface → MCP 页 | 开关与权限矩阵（原有），新增文档入口（`docs/REMOTE_MCP.md`）；底部「配置位置」一行直接给出 `sessions.json` 的绝对路径（便携模式下跟着可执行文件走） |
 
 记忆**不会自动提炼**：要么用户自己写，要么由用户在卡片里确认 AI 的提议。
-外部 MCP client（作为 client 连别人的 server）仍在 M3，需先有独立 RFC。
+外部 MCP client（作为 client 连别人的 server）仍在 M3，需先有独立 RFC：
+[docs/AI_MCP_CLIENT_RFC.md](AI_MCP_CLIENT_RFC.md) 是设计草案，**未实现** ——
+评审通过前代码里不应出现任何外部 server 连接路径。
 
 ## 工作方式：Ask / Agent（参考 GitHub Copilot 的能力分层）
 
@@ -204,6 +206,21 @@ UI 上的对应关系：
 - 输出内容按当轮的「本地脱敏」开关处理，但仍含命令与输出 —— 导出文件按敏感文件保管。
 - 设置 → Interface → **AI Copilot** 页的 **Export audit log** 可保存为文本
   （`fengheshell-ai-audit.log`），grep / less 友好。
+
+## 隐私与遥测
+
+FengheShell **没有任何遥测**：没有使用统计、埋点、崩溃上报或行为采集，也不会把终端
+内容、命令历史或会话数据发往任何由我们控制的服务器。
+
+- **外发请求只有三类，且都由用户行为触发**：你自己配置的 LLM 端点；`web_search` /
+  `web_fetch` 请求的目标站点；可选的更新检查（只查询 GitHub releases 的 tag 与资源列表，
+  下载只接受本仓库 `https://github.com` 路径下带 SHA-256 摘要的安装包）。
+- 审计日志只在**进程内存**里累积，退出即清空，只有你点了导出才会落盘。
+- 会话历史 `ai_conversations.json` 只写在**本机**数据目录（0600、原子写、落盘前脱敏）。
+- 资源监控侧边栏与系统信息窗口里的 CPU / 内存 / 网络数据是**本机展示**，不外发；提问时
+  附带的硬件快照同样只进这一轮对话的 prompt。
+- 出网前的脱敏规则见上文，它覆盖不到 IPv6、内网域名、私钥块等 —— 涉及这些内容请自行
+  规避或先改成本机占位符。
 
 ## 硬件快照融合
 
@@ -366,6 +383,29 @@ migrated**.
 Ask / Agent is **per conversation**: switching the mode applies to the current
 conversation, and the global `ai_mode` is only the default for new ones.
 
+## Model profiles / memory / skills / history (M2)
+
+M2 moves the things that used to live only in JSON into the settings pages, and adds
+per-conversation model locking plus history management.
+
+| Capability | Where | Behaviour |
+| --- | --- | --- |
+| Multiple model profiles | Settings -> Interface -> **Model profiles** | name / protocol / endpoint / model / API key each, one of them the default; the key is encrypted on disk and write-only |
+| Per-conversation model lock | **Model chip** in the panel header | A conversation snapshots the default profile's name when created; changing the global default later does not affect it, and switching mid-run only applies to later rounds |
+| Memory injection | Settings -> Interface -> **Memory** | One global list (content / source / toggle / timestamp); sources are `manual` and `ai-proposed`; injected as a leading system-prompt section after redaction; 500 characters per entry, 50 entries max |
+| Per-conversation memory switch | Panel settings drawer | Turning it off stops memory injection for that conversation only |
+| Skill management | Settings -> Interface -> **Skills** | Create, edit, delete user skills (unique id, never `general`, 8 KB cap); saving writes `ai_skills`; the built-in `general` set always applies |
+| History search | Search box in the conversation list | Case-insensitive match over titles and message bodies, with the matching snippet on the row |
+| Conversation export | Export button at the end of a list row | Redacted Markdown (command-card risk / gate / disposition, the Agent plan and step trail) - treat it as sensitive |
+| Concurrency cap | Settings -> Interface -> AI Copilot | 1-5, stored as `ai_max_parallel`; sending beyond it is refused, never queued |
+| Built-in MCP | Settings -> Interface -> MCP | Existing switches and permission matrix, plus a doc link (`docs/REMOTE_MCP.md`) and a "Settings" line showing the absolute path of `sessions.json` |
+
+Memory is **never distilled automatically**: you write it, or you confirm an AI
+proposal in a card. Acting as an MCP **client** for external servers stays in M3
+behind its own RFC: [docs/AI_MCP_CLIENT_RFC.md](AI_MCP_CLIENT_RFC.md) is a draft and
+**not implemented** - no external-server connection path may appear in the code
+until the review passes.
+
 ## Working modes: Ask / Agent (mirroring GitHub Copilot's layers)
 
 GitHub Copilot stacks three capabilities - completion, chat/edit, agent. Mapped
@@ -514,6 +554,44 @@ notes and errors.
 - **Export audit log** on the Settings -> Interface -> **AI Copilot** page saves
   it as text (`fengheshell-ai-audit.log`), grep / less friendly.
 
+## Privacy and telemetry
+
+FengheShell has **no telemetry**: no usage statistics, no event tracking, no crash
+reporting and no behavioural collection. Terminal content, command history and
+conversation data never go to any server we control.
+
+- Only three kinds of requests ever leave the machine, and each is triggered by your
+  own action: the LLM endpoint you configured, the target site of a `web_search` /
+  `web_fetch` call, and the optional update check (which only queries GitHub
+  releases for tags and assets, and downloads installers solely from this
+  repository's `https://github.com` path with a SHA-256 digest).
+- The audit log accumulates in **process memory** only and is cleared on exit; it
+  reaches the disk only when you press export.
+- Conversation history (`ai_conversations.json`) is written **locally** in the data
+  directory (0600, atomic write, redacted before it hits the disk).
+- The CPU / memory / network figures in the resource sidebar and the system info
+  window are a **local display** and are never sent anywhere; the hardware snapshot
+  attached to a question only enters that round's prompt.
+- What redaction does and does not cover is listed above (IPv6, internal hostnames
+  and private-key blocks are out of scope) - avoid those, or replace them with local
+  placeholders first.
+
+## Hardware snapshot fusion
+
+The triage system prompt carries the same host snapshot the resource sidebar shows:
+CPU, memory / swap, load, per-mount usage and network throughput. So the AI reads
+your machine state as well as your terminal - when CPU passes 90% or a mount drops
+below 10% free, opening the drawer starts a triage round on its own as
+`[AUTOMATIC TRIAGE]`.
+
+## MCP, the other direction
+
+FengheShell ships an MCP **server** (for other clients). AI Copilot is another client
+of the same automation layer: the `read_remote_file` tool reuses
+`automation::read_text` over a saved session (jump-host chains included), so you can
+ask "show me the last 50 error lines of /var/log/nginx/error.log" instead of digging
+through the SFTP panel.
+
 ## Web tools (web_search / web_fetch)
 
 When a diagnosis needs public references, the model can reach two web tools (ported
@@ -568,8 +646,10 @@ The `general` rule set (methodology + Java/Go playbooks) is always expanded into
 system prompt. Users can additionally write **their own runbooks** as skills, loaded
 on demand:
 
-Add an `ai_skills` array to `sessions.json` (no management UI — edit the config file;
-`id` must not be `general`):
+Create, edit and delete them on the Settings -> Interface -> **Skills** page (M2
+added the management UI, so hand-editing the config is no longer required; `id` must
+not be `general`, content caps at 8 KB). Saving writes the `ai_skills` array to
+`sessions.json`, which looks like this:
 
 ```json
 "ai_skills": [
@@ -600,8 +680,8 @@ does not affect a running round.
 - match_file / patch_file support POSIX shells (bash/zsh) only and need python3 or perl
   on the remote (patch_file additionally `diff`); Windows / serial / Telnet sessions
   get a clear error and should fall back to read-only run_command (grep / head).
-- User-defined skills can only be added by hand today: edit the `ai_skills` array in
-  `sessions.json`; there is no management UI.
+- User-defined skills have a management UI (Settings -> Interface -> Skills), but
+  there is no skill marketplace, import URL or versioning.
 - web_search query redaction currently uses the built-in eight rules only (private
   IPs / tokens / keys); user-defined redaction rules do not participate yet.
 - The audit log lives in process memory only and is never written automatically;

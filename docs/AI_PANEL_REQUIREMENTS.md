@@ -7,11 +7,15 @@
 >
 > **评审状态：§7 的 5 个开放问题已于 2026-10-21 定稿（见文末决策记录），可直接进入排期。**
 >
-> 现状基线见 [AI_COPILOT.md](AI_COPILOT.md)：现有抽屉是**每终端标签一个单会话**
-> （`ui/ai_panel.slint`，挂载于 `ui/terminal_view.slint` 的 overlay；Rust 侧状态为
-> `src/app/ai.rs` 的 `TabAi`），`TriageEngine` 每轮新建、无跨轮历史
-> （`crates/ai-copilot/src/triage.rs`），技能只能手改 `sessions.json`
-> （`ai_skills` 字段），无会话列表、无历史持久化、无记忆。
+> **基线（M1 之前的历史状态，现已过时，仅用于理解设计约束的来源）**：
+> 旧实现是**每终端标签一个单会话**抽屉（`ui/ai_panel.slint`，挂载于
+> `ui/terminal_view.slint` 的 overlay；Rust 侧状态为 `src/app/ai.rs` 的 `TabAi`），
+> `TriageEngine` 每轮新建、无跨轮历史（`crates/ai-copilot/src/triage.rs`），技能只能
+> 手改 `sessions.json`（`ai_skills` 字段），无会话列表、无历史持久化、无记忆。
+>
+> **当前状态（2026-10-27）：M1 与 M2 已全部合入 `main`**（PR !2 / !3 / !4，见 §6 落地
+> 记录），旧 per-tab 抽屉 UI 与代码路径已删除。使用说明见
+> [AI_COPILOT.md](AI_COPILOT.md)，M3 的待推进事项与优先级见 §6.1。
 
 ---
 
@@ -281,6 +285,7 @@
 | 性能 | 切会话 UI < 100ms；10 个会话常驻面板内存增量 < 20MB；持久化防抖批量写不逐 token 落盘；并发运行上限默认 3 |
 | 兼容 | `sessions.json` 新字段全部可选；旧 per-tab 对话不迁移（现状未落盘，见 D1）；`Ctrl+Space` 行为变更需在 CHANGELOG 与设置提示 |
 | 可观测 | 复用现有审计日志：新增事件点（会话创建/切换/恢复、并发拒绝、串行化降级、记忆写入、模型锁定切换） |
+| 隐私 | **禁止遥测**：不得新增任何使用统计、埋点、崩溃上报或行为采集；审计日志只在进程内存累积、由用户手动导出；本机资源快照仅在本地界面展示，不外发；唯一的外发请求是用户自己配置的 LLM 端点、`web_search` / `web_fetch` 的目标与可选的更新检查（GitHub releases，见 §6.1-N1） |
 | 质量 | 每个 P0/P1 功能附验收标准（见 §3）；核心路径补单测（串行化锁、并发上限、迁移、脱敏导出） |
 
 ---
@@ -293,21 +298,50 @@
 | **M2（P1）管理闭环** | F2 模型管理 + F3 会话级模式 + F6 历史管理 + F7 记忆 + F8 技能 UI + F9-P1 内置 MCP 开关 | 技能/记忆零手改 JSON；历史可搜索可导出；模型按会话锁定可验证 |
 | **M3（P2）扩展** | F9-P2 外部 MCP client（独立 RFC 先行）、记忆自动提炼评估、会话导出格式增强、LLM 自动命名 | 另立需求文档评审 |
 
-> **进展（2026-10-23）**：M1 见 !2，M2 见 !3。M3 的 F9-P2 已产出设计草案
-> [AI_MCP_CLIENT_RFC.md](AI_MCP_CLIENT_RFC.md)（**未实现**，等评审拍板 §9 的五个问题）；
-> 其余三项（记忆自动提炼、导出格式增强、LLM 自动命名）仍待评估。
+> **进展（2026-10-27 更新）**：M1（!2）、M2（!3）与 M3 的文档 / RFC 部分（!4）**已全部合入
+> `main`**（merge commit `fd2911b` / `e87c6ff` / `86d4c8d`），`main` 上的 push 门禁
+> （rustfmt / clippy / `cargo test --workspace` / build check / npm audit）全绿 —— 这是这批
+> 代码**首次拿到平台侧结论**：此前 !2 / !3 / !4 因 `.cnb.yml` 只把 `pull_request` 挂在
+> `main` 下而没有任何 CI 结论，只有本地绿灯（!5 已补上覆盖所有分支的 SCA 扫描）。
+> M3 的 F9-P2 已产出设计草案 [AI_MCP_CLIENT_RFC.md](AI_MCP_CLIENT_RFC.md)
+> （**未实现**，等评审拍板 §9 的五个问题）；其余三项（记忆自动提炼、导出格式增强、
+> LLM 自动命名）仍待评估。待推进事项与优先级见 §6.1。
 
-**落地记录（2026-10-23）**
+**落地记录（2026-10-27 更新）**
 
-- M1 与 M2 均已完成：M1 见 PR !2；M2（F2 / F3 / F6 / F7 / F8 / F9-P1 + 并发上限设置入口）
-  在同一分支上继续，代码集中在 `src/app/ai_m2.rs`（设置页回调）、`crates/ai-copilot/src/memory.rs`
-  （记忆校验与注入）与 `src/app/ai_store.rs`（检索 / 导出 / 会话级字段）。
+- **合并状态**：!4（`work-m3` → `m2`）、!3（`m2` → `auto/ai-multi-session-e371`）、
+  !2（`auto/…` → `main`）按链式自底向上合并，`main` 与 `work-m3` 内容一致；随后 !5
+  （全分支 SCA 扫描流水线）与 !6（tokio 1.54.1，CVE-2026-115567）也已合入。
+- M1 代码集中在 `src/app/ai_store.rs`（会话表 / 检索 / 导出 / 会话级字段）与
+  `src/app/ai_callbacks.rs`；M2 集中在 `src/app/ai_m2.rs`（设置页回调）、
+  `crates/ai-copilot/src/memory.rs`（记忆校验与注入）与 `src/config/impls/config.rs`
+  （模型 / 记忆 / 技能的读写与校验）。
 - F3 的「模式 chip」在 M1 已提到会话级，M2 只是把写入路径收敛到
   `ConversationStore::set_mode`。
 - F7 的「AI 提议卡片」只落了数据链路（`ai-proposed` 来源 + 校验 + 注入），
   提议卡片的交互与命令卡片同款，留给引入提议工具的后续迭代；本期不做自动提炼。
-- F9-P1 只补了 MCP 页的文档入口与并发/权限矩阵的既有开关，没有新增协议代码。
-- M3 的入口条件不变：外部 MCP client 必须先有独立 RFC。
+- F9-P1 补齐了两件事：MCP 页的文档入口，以及底部「配置位置」一行（`sessions.json`
+  的绝对路径，便携模式下跟着可执行文件走）；没有新增协议代码。
+- M3 的入口条件不变：外部 MCP client 必须先有独立 RFC，且 RFC 要先过评审。
+
+### 6.1 待推进事项与优先级（2026-10-27）
+
+排序原则：**先清风险（安全 / 合规），再补验证（真机回归），最后做扩展**。
+P0 = 已知的安全与合规债；P1 = 让 M1 / M2 真正可交付的验证缺口；P2 = 需要决策的扩展项；
+P3 = 收尾整理。
+
+| 优先级 | 事项 | 说明 / 出口标准 | 依赖 |
+| --- | --- | --- | --- |
+| **P0-N1** | 无遥测约束落地 | 约束已登记进 §5；还需补一条**可机械校验**的手段（CI 关键字门禁或评审 checklist），防止后续引入埋点 / 使用统计 / 崩溃上报。当前代码已核查：无任何遥测实现 | 无 |
+| **P0-N2** | `russh` 升级立项 | 首次全量 SCA 报 24 条漏洞（6 High / 15 Medium / 3 Low），`russh@0.49.2` 独占 22 条。先复检 `audit.toml` 中「修复版引入 -rc/-pre 加密库」的豁免理由是否仍成立（链路上已有 0.62.x / 0.64.x），再决定 API 迁移方案 | 无 |
+| **P0-N3** | `jsonwebtoken` 升级评估 | 9.3.1 → 10.3.0 属破坏性升级，需单独评估影响面（MCP / OAuth 相关），不混进依赖补丁 | 无 |
+| **P1-N4** | M1 真机回归（WP8 手工矩阵） | Windows / macOS / Linux × 中文 IME / htop 全屏 / 分屏 / 多窗口拖 tab / 睡眠唤醒。CI 覆盖不到，是目前唯一的自动化盲区 | 无 |
+| **P1-N5** | M2 设置页真机回归 | 模型配置 / 记忆 / 技能三个新页面在 360 / 520 两档下的中文排版；真实多模型切换的审计验证；导出对话框在 Windows / macOS 上的行为 | 无 |
+| **P1-N6** | 依赖安全看板收敛 | SCA 已开全量扫描（`**` 块：漏洞 / License / SBOM），PR 走增量门禁只拦新增 High / Critical。待 N2 / N3 处置后，再评估是否给 push 加 `failOnSeverity` 阈值 | N2、N3 |
+| **P2-N7** | F9-P2 外部 MCP client RFC 评审 | 拍板 [RFC](AI_MCP_CLIENT_RFC.md) §9 的 5 个问题（工具结果是否入 `ai_conversations.json`、是否要连通性测试 UI、是否允许 server 级联等）。**评审通过前不得出现实现代码** | 评审安排 |
+| **P2-N8** | 记忆自动提炼 / 导出格式增强 / LLM 自动命名 | 三项都依赖真实使用数据，数据不足时保持停滞（当前决定，不提前开工） | 使用数据 |
+| **P3-N9** | 分支清理 | `m2`、`auto/ai-multi-session-e371`、`work-m3`、`ci/security-scan`、`ci/deps-tokio` 均已合入完毕，可删除 | 无 |
+| **P3-N10** | Issue #1 收口 | 完成 N4 / N5 后决定：继续推进 M3（先做 N7），还是就此关闭 #1 | N4、N5 |
 
 ---
 
@@ -347,3 +381,14 @@ M3 extensions) with per-feature acceptance criteria. The five open questions are
 resolved: two-tier 360/520 px panel with no drag, `Ctrl+Shift+O` for a new
 conversation (since `Ctrl+Shift+N` opens a new window), fixed concurrency default
 3, Markdown-only export in P1, and external MCP as an M3 candidate pending an RFC.
+
+**Status (2026-10-27).** M1 (!2), M2 (!3) and the M3 documentation/RFC slice (!4)
+are merged into `main` (merge commits `fd2911b`, `e87c6ff`, `86d4c8d`); the old
+per-tab drawer is gone. The `main` push gate (rustfmt, clippy, `cargo test
+--workspace`, build check, npm audit) is green — the first platform-side verdict
+for this work, since `.cnb.yml` previously attached `pull_request` to `main` only
+and those PRs ran no CI at all (!5 later added SCA scanning for every branch).
+M3's F9-P2 exists only as a draft RFC. §6.1 carries the ranked backlog: no
+telemetry constraint and the `russh` / `jsonwebtoken` dependency work (P0), the
+manual regression matrices CI cannot cover (P1), the RFC review and the three
+data-dependent M3 items (P2), then branch cleanup and issue closure (P3).
