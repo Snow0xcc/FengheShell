@@ -72,11 +72,12 @@ chrono = { version = "0.4", features = ["serde"] }
 sysinfo = "0.33"
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "net", "time", "fs", "signal"] }
-# Pinned to 0.49: RUSTSEC-2026-0154 (an unbounded-allocation DoS in russh's
-# ssh-AGENT frame parsing) is fixed only in >= 0.60.3, which drags in pre-release
-# crypto crates (ed25519-dalek 3.0.0-pre, aes-gcm 0.11.0-rc, 鈥?. fengheshell never
-# uses the ssh-agent, so the advisory is not reachable here 鈥?see audit.toml.
-# Revisit the upgrade once russh's deps leave the -rc channel (cf. PR #151).
+# Pinned to 0.49: RUSTSEC-2026-0154 (an unbounded-allocation DoS in russh's ssh-AGENT
+# frame parsing) is fixed only in >= 0.60.3. fengheshell never uses the ssh-agent, so
+# the advisory is unreachable here — see audit.toml for the full rationale and its
+# 2026-10-27 re-check (the original "pre-release crypto" argument is now only partly
+# true: the Dalek/AEAD crates have shipped, while ssh-key / rsa / pkcs1 are still rc).
+# Revisit once ssh-key 0.7 / rsa 0.10 / pkcs1 0.8 are released (cf. PR #151).
 russh = "0.49"
 russh-keys = "0.49"
 ssh-key = "0.6"
