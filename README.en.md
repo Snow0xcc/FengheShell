@@ -100,7 +100,10 @@ open /Applications/fengheshell.app
 - [x] Known-hosts (`known_hosts`) verification + first-connect confirmation
 - [x] Split panes for tabbed terminals
 - [x] Multiple windows: Ctrl+Shift+N (macOS ⌘⇧N) or the system "New window" entry (Windows taskbar / Linux desktop right-click), managed as a single Chrome-style process
-- [x] **AI Copilot drawer (built-in ops assistant)**: open it from the `AI` button on the terminal status strip
+- [x] **AI Copilot panel (built-in ops assistant)**: the `AI` button on the terminal status strip, or `Ctrl+Space`, opens an **application-level right dock** (two width tiers, 360 / 520 px)
+  - Multi-conversation: conversations do not belong to a terminal tab - closing the panel, switching tabs or conversations, or dragging a tab to another window never interrupts a running round; `Ctrl+Shift+O` (macOS `⌘⇧O`) starts a new one, at most 3 run at once (1-5 in the settings), and command execution on the same anchor is serialised
+  - History and settings: conversations persist to the local `ai_conversations.json` (0600, atomic write, redacted before it hits the disk) with full-text search and redacted export; Settings -> Interface gains **model profiles / memory / skills** pages
+  - No telemetry: no usage statistics, event tracking or crash reporting; the only outbound requests are the LLM endpoint you configured, the target site of `web_search` / `web_fetch`, and the optional update check (GitHub releases only)
   - Local redaction before anything leaves the machine (private IPs / bearer & JWT tokens / `sk-` & AWS keys / long hex strings - eight built-in rules); commands the model echoes back with placeholders are restored locally before reaching the shell
   - Context comes from command-block parsing: OSC 133 semantic blocks when available, otherwise FengheShell's own shell hook (OSC 697), capped at the last 8 KB
   - Every question carries the live local resource snapshot (CPU / memory / disks / network), and opening the drawer during a hardware spike starts a triage round automatically

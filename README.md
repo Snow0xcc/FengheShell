@@ -95,7 +95,10 @@ open /Applications/fengheshell.app
 - [x] 已知主机（`known_hosts`）校验 + 首次连接确认
 - [x] 多标签页终端分屏
 - [x] 多窗口：Ctrl+Shift+N（macOS ⌘⇧N）或系统入口“新建窗口”（Windows 任务栏 / Linux 桌面右键），Chrome 式单进程管理
-- [x] **AI Copilot 抽屉（内置 AI 运维助手）**：终端状态条上的 `AI` 按钮打开右侧抽屉
+- [x] **AI Copilot 面板（内置 AI 运维助手）**：终端状态条上的 `AI` 按钮或 `Ctrl+Space` 打开**应用级右侧 dock 面板**（360 / 520 两档宽度）
+  - 多会话：会话不属于任何终端标签 —— 收起面板、切标签、切会话、把标签拖到别的窗口都不会打断正在跑的一轮；`Ctrl+Shift+O`（macOS `⌘⇧O`）新建会话，同时最多 3 条在跑（可调 1–5），同一锚点的命令执行串行化
+  - 历史与设置：会话历史落在本机 `ai_conversations.json`（0600、原子写、落盘前脱敏），支持全文检索与脱敏导出；设置 → Interface 提供**模型配置 / 记忆 / 技能**三个管理页面
+  - 无遥测：没有使用统计、埋点与崩溃上报；外发请求只有你自己配置的 LLM 端点、`web_search` / `web_fetch` 的目标站点，以及可选的更新检查（只查 GitHub releases）
   - 出网前先做本地脱敏（内网 IP / Bearer、JWT Token / `sk-`、AWS key / 长 hex 串，共 8 条内置规则）；AI 回代带占位符的命令会在本机还原后才写入终端
   - 上下文来自命令块解析：优先 OSC 133 语义块，没有时退回 FengheShell 自带的 shell hook（OSC 697），只留最近 8 KB
   - 每次提问都会带上本机资源监控快照（CPU / 内存 / 磁盘 / 网络），硬件异常时打开抽屉会自动起一轮排查
