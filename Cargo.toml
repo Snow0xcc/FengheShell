@@ -188,8 +188,15 @@ features = ["server", "transport-streamable-http-server"]
 [dependencies.axum]
 version = "0.8"
 
+# CVE-2026-25537 is a type-confusion authorization bypass fixed in 10.3.0.
+# 10.x made the crypto backend a trait: exactly one of aws_lc_rs / rust_crypto
+# must be enabled. rust_crypto is pure Rust and reuses the Russh/RustCrypto
+# stack already in the tree - aws_lc_rs needs a C toolchain and cmake, which
+# would tax the Windows and macOS cross-compiles. Enabling both would land on
+# a panic stub instead of returning Err.
 [dependencies.jsonwebtoken]
-version = "9.3"
+version = "10.3"
+features = ["rust_crypto"]
 
 [dependencies.tokio-util]
 version = "0.7"
