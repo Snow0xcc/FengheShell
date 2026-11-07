@@ -69,7 +69,8 @@ impl TriggerEngine {
             let keep = trigger.rule.expect.len().saturating_sub(1).max(256);
             if trigger.buffer.len() > keep {
                 let mut split = trigger.buffer.len() - keep;
-                // ceil_char_boundary() is stable since 1.91; keep MSRV 1.88.
+                // MSRV is 1.92, so ceil_char_boundary() (stable since 1.91) is
+                // available; the explicit walk is kept to make the split point obvious.
                 while !trigger.buffer.is_char_boundary(split) {
                     split += 1;
                 }

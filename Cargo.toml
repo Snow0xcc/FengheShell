@@ -7,7 +7,10 @@ description = "A lightweight FinalShell-style SSH/terminal client written in Rus
 license = "MIT OR Apache-2.0"
 repository = "https://cnb.cool/SecLab/FengheShell"
 readme = "README.md"
-rust-version = "1.88"
+# Slint 1.18.1 and the i-slint-* crates (including the vendored patches) require
+# rustc 1.92; uuid 1.28.0 needs 1.89 and tree-sitter-language 0.1.9 needs 1.90.
+# Keep this in sync with the actual dependency MSRVs, not the local toolchain.
+rust-version = "1.92"
 
 # FengheShell × rssh 缝合：AI 运维 Copilot 以独立 crate 注入基底
 # （本地脱敏 / OSC133 命令块 / 风险 Run Gate / LLM Triage）。
@@ -190,6 +193,8 @@ features = ["server", "transport-streamable-http-server"]
 version = "0.8"
 
 # CVE-2026-25537 is a type-confusion authorization bypass fixed in 10.3.0.
+# Cargo.lock resolves to 10.4.0 (f192677); "10.3" below is the minimum
+# compatible caret range, not the pinned version.
 # 10.x made the crypto backend a trait: exactly one of aws_lc_rs / rust_crypto
 # must be enabled. rust_crypto is pure Rust and reuses the Russh/RustCrypto
 # stack already in the tree - aws_lc_rs needs a C toolchain and cmake, which

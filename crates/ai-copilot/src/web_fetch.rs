@@ -5,6 +5,13 @@
 //! markdown 64 KiB 截断、content-type 白名单、Cloudflare challenge 的
 //! 诚实 UA 重试一次。页面内容按**不可信外部数据**处理（payload 带 warning）。
 //!
+//! 出站边界额外加了 rssh 没有的一层：URL 里**字面写出**的非公网地址
+//! （loopback / 私网 / link-local 含云元数据 / CGNAT / 未指定 / 组播 …
+//! 以及 localhost.local 一类本地域名）一律拒绝，重定向的每一跳也重新过一遍。
+//! 只查字面量、不做 DNS 解析 —— 后者在 fake-ip 代理下会把每个域名都解析进
+//! 代理的虚拟网段而误杀正常请求。域名解析到私网 / DNS rebinding 的残余风险
+//! 见 docs/AI_COPILOT.md 的已知限制。
+//!
 //! 与 rssh 的差异：
 //! - 品牌化：截断提示写 fengheshell；诚实 UA 带本 crate 版本。
 //! - 编排（审批卡片 / 脱敏）在 `triage.rs`，本模块只负责「抓取 + 转 markdown」。
@@ -12,13 +19,14 @@
 //!   （URL 校验 / HTML→markdown / 截断），抓取本身由宿主的真实 LLM 轮次覆盖。
 
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use html2md::{Handle, StructuredPrinter, TagHandler, TagHandlerFactory};
 use serde::Serialize;
-use url::Url;
+use url::{Host, Url};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -43,6 +51,10 @@ pub enum WebFetchError {
     UnsupportedScheme,
     #[error("web_fetch URLs must not contain embedded credentials")]
     CredentialsNotAllowed,
+    #[error(
+        "web_fetch refuses non-public literal hosts (loopback / private / link-local / metadata)"
+    )]
+    ForbiddenHost,
     #[error("web_fetch could not extract readable content from the page")]
     ContentExtraction,
     #[error("web_fetch could not create its HTTP client")]
@@ -67,12 +79,52 @@ pub struct WebPage {
     pub truncated: bool,
 }
 
-/// URL shape check — scheme, host, no embedded credentials. This is the ONLY
-/// gate (mirrors opencode/rssh): no IP allowlist, no DNS-resolved-address check,
-/// no DNS-rebinding pin. Behind a fake-ip proxy those checks are ineffective
-/// anyway (every domain resolves into the proxy's virtual range), and they
-/// broke real usage. The user approval card is the backstop — every URL is
-/// shown before fetch, same as rssh's ctx.ask.
+/// 出站边界：字面写出的非公网地址一律拒绝。
+///
+/// 只查 URL 里写死的 IP，不做 DNS 解析 —— fake-ip 代理下每个域名都会解析进
+/// 代理的虚拟网段，逐地址校验既无效又误杀正常请求（rssh 上游的取舍）。
+/// 域名解析到私网 / DNS rebinding 属于残余风险，由审批卡与文档说明兜住。
+fn is_forbidden_literal_host(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(d)) => {
+            let d = d.trim_end_matches('.').to_ascii_lowercase();
+            d == "localhost"
+                || d.ends_with(".localhost")
+                || d.ends_with(".local")
+                || d.ends_with(".internal")
+        }
+        Some(Host::Ipv4(ip)) => is_forbidden_ipv4(ip),
+        Some(Host::Ipv6(ip)) => {
+            // ::ffff:a.b.c.d / ::a.b.c.d 这类内嵌 v4 地址按 v4 规则判定。
+            if let Some(v4) = ip.to_ipv4() {
+                return is_forbidden_ipv4(v4);
+            }
+            let s = ip.segments();
+            ip.is_unspecified()
+                || ip.is_loopback()
+                || ip.is_multicast()
+                || (s[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
+                || (s[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+        }
+        None => true,
+    }
+}
+
+fn is_forbidden_ipv4(ip: Ipv4Addr) -> bool {
+    let o = ip.octets();
+    ip.is_unspecified()
+        || ip.is_loopback() // 127/8
+        || ip.is_private() // 10/8, 172.16/12, 192.168/16
+        || ip.is_link_local() // 169.254/16 —— 含 169.254.169.254 云元数据
+        || ip.is_multicast()
+        || o[0] == 0 // 0/8
+        || (o[0] == 100 && (o[1] & 0xc0) == 64) // 100.64/10 CGNAT，含 100.100.100.200 元数据
+        || o[0] >= 240 // 240/4 保留（含 255.255.255.255 广播）
+}
+
+/// URL shape check — scheme, host, no embedded credentials, and a public
+/// literal host. 这是网络出站的第一道边界，YOLO 自动批准审批卡也绕不过它；
+/// 重定向的每一跳在 [`redirect_policy`] 里重新过一遍同样的检查。
 fn validate_url_shape(url: &Url) -> Result<(), WebFetchError> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(WebFetchError::UnsupportedScheme);
@@ -82,6 +134,9 @@ fn validate_url_shape(url: &Url) -> Result<(), WebFetchError> {
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err(WebFetchError::CredentialsNotAllowed);
+    }
+    if is_forbidden_literal_host(url) {
+        return Err(WebFetchError::ForbiddenHost);
     }
     Ok(())
 }
@@ -229,11 +284,25 @@ fn is_cf_challenge(response: &reqwest::Response) -> bool {
             .is_some_and(|value| value == "challenge")
 }
 
+/// 每一跳都重新过一遍出站边界：公开页面 302 到云元数据 / 内网地址时不能跟着跳。
+/// 与 `Policy::limited` 一样用 `MAX_REDIRECTS` 限次数。
+fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() > MAX_REDIRECTS {
+            return attempt.error("too many redirects");
+        }
+        if let Err(e) = validate_url_shape(attempt.url()) {
+            return attempt.error(e);
+        }
+        attempt.follow()
+    })
+}
+
 fn http_client() -> Result<&'static reqwest::Client, WebFetchError> {
     HTTP_CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+                .redirect(redirect_policy())
                 .connect_timeout(CONNECT_TIMEOUT)
                 .timeout(REQUEST_TIMEOUT)
                 .build()
@@ -243,9 +312,9 @@ fn http_client() -> Result<&'static reqwest::Client, WebFetchError> {
         .map_err(|_| WebFetchError::ClientBuild)
 }
 
-/// 抓取并归一化一个页面。reqwest 自己跟随重定向（Policy::limited）并通过
-/// `system-proxy` feature 读系统代理 —— 与 rssh 一致：没有手工重定向循环，
-/// 没有逐跳地址复查。
+/// 抓取并归一化一个页面。reqwest 自己跟随重定向（`redirect_policy` 逐跳复查）
+/// 并通过 `system-proxy` feature 读系统代理；最终落点再做一次边界复查，
+/// 不让任何配置差异绕过字面量校验。
 pub async fn fetch(raw_url: &str) -> Result<WebPage, WebFetchError> {
     let requested_url = parse_target(raw_url)?;
     let client = http_client()?;
@@ -261,6 +330,7 @@ pub async fn fetch(raw_url: &str) -> Result<WebPage, WebFetchError> {
     if !response.status().is_success() {
         return Err(WebFetchError::HttpStatus(response.status().as_u16()));
     }
+    validate_url_shape(response.url())?;
     let final_url = response.url().to_string();
     let content_type = response
         .headers()
@@ -318,6 +388,56 @@ mod tests {
     fn rejects_an_oversized_target_url() {
         let raw = format!("https://example.com/{}", "x".repeat(MAX_URL_CHARS));
         assert!(matches!(parse_target(&raw), Err(WebFetchError::InvalidUrl)));
+    }
+
+    #[test]
+    fn refuses_non_public_literal_hosts_before_any_request() {
+        let blocked = [
+            "http://127.0.0.1:8080/admin",
+            "http://localhost/health",
+            "http://service.local/runbook",
+            "http://wiki.internal/page",
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+            "http://100.100.100.200/latest/meta-data/",
+            "http://10.0.0.5/docs",
+            "http://172.16.3.4/docs",
+            "http://192.168.1.1/router",
+            "http://0.0.0.0/",
+            "http://[::1]/",
+            "http://[fc00::1]/",
+            "http://[fe80::1]/",
+            "http://[::ffff:127.0.0.1]/",
+        ];
+        for raw in blocked {
+            assert!(
+                matches!(parse_target(raw), Err(WebFetchError::ForbiddenHost)),
+                "{raw} must be refused at the egress boundary"
+            );
+        }
+    }
+
+    #[test]
+    fn allows_public_literal_hosts() {
+        for raw in [
+            "https://example.com/docs",
+            "https://8.8.8.8/dns",
+            "https://[2606:4700:4700::1111]/",
+        ] {
+            assert!(parse_target(raw).is_ok(), "{raw} should be fetchable");
+        }
+    }
+
+    #[test]
+    fn redirect_hops_reuse_the_same_shape_check() {
+        // redirect_policy 对 attempt.url() 调用的就是 validate_url_shape；
+        // 这里覆盖「公开起点 302 到内网/元数据」的落点形态。
+        let redirected = Url::parse("http://169.254.169.254/latest/meta-data/").unwrap();
+        assert!(matches!(
+            validate_url_shape(&redirected),
+            Err(WebFetchError::ForbiddenHost)
+        ));
+        let redirected = Url::parse("http://user:pass@10.0.0.5/").unwrap();
+        assert!(validate_url_shape(&redirected).is_err());
     }
 
     #[test]

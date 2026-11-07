@@ -325,8 +325,6 @@ pub struct ProposedCommand {
     pub id: String,
     /// 还原脱敏后的真实命令（可直接填入/执行）。
     pub cmd: String,
-    /// 脱敏态命令（回传给 LLM 的历史里用）。
-    pub cmd_redacted: String,
     pub explain: String,
     pub side_effect: String,
     /// LLM 请求的 PTY 等待秒数（已钳制 1..=300）。None = 宿主默认。
@@ -993,11 +991,6 @@ impl TriageEngine {
         let proposal = ProposedCommand {
             id: format!("fop-{}", proposed.len() + 1),
             cmd: cmd.clone(),
-            cmd_redacted: if self.cfg.redaction_enabled && !self.cfg.yolo {
-                self.redactor.apply(&cmd, map)
-            } else {
-                cmd.clone()
-            },
             explain: explain.to_string(),
             side_effect: side_effect.to_string(),
             // file_ops 是后端模板命令，不走 LLM 超时：None = 宿主默认。
@@ -1153,14 +1146,18 @@ impl TriageEngine {
                 let real_cmd = map.restore(&input.cmd);
                 // LLM 请求的等待秒数：钳制 1..=300（上游 rssh 同款），None = 宿主默认。
                 let timeout_s = input.timeout_s.map(|t| t.clamp(1, 300));
-                // 墙 1：shape validator（rssh 移植）。YOLO = 完全信任，跳过。
-                let shape_blocked = if self.cfg.yolo {
-                    None
-                } else {
-                    sanitize::validate_with(&real_cmd, &sanitize::Blacklist::builtin()).err()
-                };
-                if let Some(e) = shape_blocked {
-                    let reason = crate::risk::shape_reason(&e);
+                // 墙 1 + 墙 2：shape validator 只在 assess_command 里跑一次，
+                // 结果同时用于硬拦截与风险分级（此前重复校验两遍）。YOLO 有意
+                // 跳过 shape 墙，因此清掉 blocked 标记并按 DirectRun 展示 ——
+                // 否则会出现「gate=Blocked 却 disposition=Executed」的自相矛盾卡片，
+                // 也让 Blocked 失去准入含义。
+                let mut assessment = assess_command(&real_cmd);
+                if self.cfg.yolo {
+                    assessment.blocked = None;
+                }
+                // Gate 是硬准入判据，与 auto_ok / YOLO 无关：任何被判为 Blocked
+                // 的提议都在这里收口，绝不进入 execute_approved。
+                if let Some(reason) = assessment.blocked.clone() {
                     self.audit_push(AuditKind::CommandBlocked {
                         cmd: real_cmd.clone(),
                         reason: reason.clone(),
@@ -1169,11 +1166,10 @@ impl TriageEngine {
                     proposed.push(ProposedCommand {
                         id: format!("cmd-{}", proposed.len() + 1),
                         cmd: real_cmd.clone(),
-                        cmd_redacted: redact(&real_cmd, map),
                         explain: input.explain.clone(),
                         side_effect: input.side_effect.clone(),
                         timeout_s,
-                        risk: RiskLevel::Destructive,
+                        risk: assessment.level,
                         gate: Gate::Blocked,
                         blocked_reason: Some(reason.clone()),
                         outcome: None,
@@ -1185,14 +1181,15 @@ impl TriageEngine {
                         format!("blocked: {}", input.cmd.chars().take(60).collect::<String>()),
                     );
                 }
-                // 墙 2：风险分级
-                let assessment = assess_command(&real_cmd);
-                let gate = gate_of(&assessment);
+                let gate = if self.cfg.yolo {
+                    Gate::DirectRun
+                } else {
+                    gate_of(&assessment)
+                };
                 let id = format!("cmd-{}", proposed.len() + 1);
                 let mut proposal = ProposedCommand {
                     id: id.clone(),
                     cmd: real_cmd.clone(),
-                    cmd_redacted: redact(&real_cmd, map),
                     explain: input.explain.clone(),
                     side_effect: input.side_effect.clone(),
                     timeout_s,
@@ -1882,12 +1879,7 @@ impl TriageEngine {
                 let card_cmd = format!("web_fetch {url}");
                 let proposal = ProposedCommand {
                     id: format!("web-{}", proposed.len() + 1),
-                    cmd: card_cmd.clone(),
-                    cmd_redacted: if self.cfg.redaction_enabled && !self.cfg.yolo {
-                        self.redactor.apply(&card_cmd, map)
-                    } else {
-                        card_cmd
-                    },
+                    cmd: card_cmd,
                     explain: "抓取网页内容转为可读文本".into(),
                     side_effect: format!(
                         "read-only: sends an HTTP(S) GET to {}",
@@ -1935,9 +1927,11 @@ impl TriageEngine {
                 }
                 match web_fetch::fetch(url.as_str()).await {
                     Ok(page) => {
+                        // URL 可能带签名 / token 查询参数：审计日志可导出落盘，
+                        // 与页面正文一样按当轮脱敏开关处理后再记。
                         self.audit_push(AuditKind::WebFetchCompleted {
-                            requested_url: input.url.clone(),
-                            final_url: page.final_url.clone(),
+                            requested_url: redact(&input.url, map),
+                            final_url: redact(&page.final_url, map),
                             source_bytes: page.source_bytes,
                             truncated: page.truncated,
                         });
@@ -1947,7 +1941,7 @@ impl TriageEngine {
                         (
                             redact(&web_fetch::tool_payload(&page), map),
                             false,
-                            format!("fetched {url}"),
+                            format!("fetched {}", redact(url.as_str(), map)),
                         )
                     }
                     Err(e) => {
@@ -2486,6 +2480,9 @@ mod tests {
         eng.cfg.yolo = true;
         let out = eng.ask(&ctx(), None).await.unwrap();
         assert_eq!(out.proposed[0].disposition, Disposition::Executed);
+        // YOLO 跳过了 shape 墙：卡片不该再自相矛盾地标成 Blocked / 带拒绝原因。
+        assert_eq!(out.proposed[0].gate, Gate::DirectRun);
+        assert!(out.proposed[0].blocked_reason.is_none());
         assert_eq!(
             rt.run_log.lock().unwrap()[0],
             "rm -rf /var/log/nginx",
@@ -3225,6 +3222,35 @@ mod tests {
         assert!(out.tool_log.last().unwrap().is_error);
         // 非法 URL 连审批卡片都不该弹。
         assert!(out.proposed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn web_fetch_refuses_non_public_hosts_even_in_yolo() {
+        // YOLO 会自动批准审批卡（原先唯一的 SSRF 兜底），所以非公网字面量
+        // 必须在 parse_target 这一层就拒绝，且发生在弹卡之前。
+        for url in [
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+            "http://10.0.0.5/internal-wiki",
+            "http://127.0.0.1:8080/admin",
+            "http://[::1]/",
+        ] {
+            let rt = Arc::new(MockRuntime::default());
+            let mut eng = engine(
+                vec![
+                    resp_with_tools(vec![tool_call(
+                        "t1",
+                        TOOL_WEB_FETCH,
+                        serde_json::json!({ "url": url }),
+                    )]),
+                    resp_final("换个地址"),
+                ],
+                rt.clone(),
+            );
+            eng.cfg.yolo = true;
+            let out = eng.ask(&ctx(), None).await.unwrap();
+            assert!(out.tool_log.last().unwrap().is_error, "{url}");
+            assert!(out.proposed.is_empty(), "{url} must not open a card");
+        }
     }
 
     // ─── 工具暴露矩阵 ───────────────────────────────────────────────

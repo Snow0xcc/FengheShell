@@ -3,7 +3,8 @@
 # GitHub Actions 工作流只在 GitHub 侧执行；CNB 侧由本文件驱动，
 # push / PR 到 main 时自动触发（仓库设置已开 auto_trigger）。
 # main 块的两条流水线（rust / npm-audit）并行执行，与 ci.yml 的并行 job 对齐；
-# 末尾的 `**` 块给所有分支带来 SCA 扫描（漏洞 / License / SBOM）。
+# 末尾的 `**` 块给所有分支带来 SCA 扫描（漏洞 / License / SBOM），并在分支链的
+# PR 上复用 main 的 rust 门禁（push 不重复跑全量构建）。
 # 平台级代码安全扫描（secrets + SCA）走仓库默认规则；这里的插件流水线额外补上
 # PR 增量门禁与全量报告，两者互补而非重复。
 #
@@ -11,7 +12,8 @@
 # the GitHub side; this file drives the CNB cloud-native build. The two main
 # pipelines (rust / npm-audit) run in parallel, matching ci.yml's parallel
 # jobs, and the trailing `**` block adds SCA scanning (vulnerability /
-# license / SBOM) to every branch. The platform-level code security scan
+# license / SBOM) to every branch, plus the main rust gate on branch-chain PRs
+# (pushes skip the full build). The platform-level code security scan
 # (secrets + SCA) keeps its repo defaults; these plugin pipelines add
 # incremental PR gating and full reports on top, rather than duplicating it.
 
@@ -117,8 +119,10 @@ main:
             scanMode: full
             publish: true
   pull_request.target:
-    # 遥测门禁同样挂在所有分支上：分支链上的 PR 不会跑到 main 的 rust 流水线，
-    # 只挂 main 的话这条约束在长分支上形同虚设。
+    # 分支链上的 PR 不走 main 的 rust 流水线，这里复用同一锚点补齐 fmt / clippy /
+    # test / build 门禁；push 块仍只做 SCA + 遥测，避免每次推送都跑全量构建。
+    - *rust-ci
+    # 遥测门禁同样挂在所有分支上：只挂 main 的话这条约束在长分支上形同虚设。
     - name: no-telemetry
       docker:
         image: alpine:3

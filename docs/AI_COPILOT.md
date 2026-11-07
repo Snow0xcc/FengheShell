@@ -80,7 +80,8 @@ M2 把「只能在 JSON 里手改的东西」搬进了设置页，也给会话�
 | 并发上限 | 设置 → Interface → AI Copilot 页 | 1–5 档，写 `ai_max_parallel`，超出后发送即拒绝、不排队 |
 | 内置 MCP | 设置 → Interface → MCP 页 | 开关与权限矩阵（原有），新增文档入口（`docs/REMOTE_MCP.md`）；底部「配置位置」一行直接给出 `sessions.json` 的绝对路径（便携模式下跟着可执行文件走） |
 
-记忆**不会自动提炼**：要么用户自己写，要么由用户在卡片里确认 AI 的提议。
+记忆**不会自动提炼**：目前只能由用户自己写。`ai-proposed` 来源与落库链路已就绪，
+但「AI 提议 → 卡片确认」的交互**尚未实现**（见 `AI_PANEL_REQUIREMENTS.md` 的 F7 说明）。
 外部 MCP client（作为 client 连别人的 server）仍在 M3，需先有独立 RFC：
 [docs/AI_MCP_CLIENT_RFC.md](AI_MCP_CLIENT_RFC.md) 是设计草案，**未实现** ——
 评审通过前代码里不应出现任何外部 server 连接路径。
@@ -250,6 +251,11 @@ FengheShell 自带 MCP Server（对外给别的客户端用）。AI Copilot 则�
 - **web_fetch**：抓一个具体 URL 并转成 Markdown（HTML 全页转换，DOM 层丢弃
   script/style 等，script 文本永远不会变成 Markdown）。5 MiB 响应上限、
   64 KiB Markdown 截断；每次抓取都会弹出审批卡片，URL 对用户可见。
+  出站边界另有一层硬校验：URL 里**字面写出**的非公网地址（loopback / 私网 /
+  link-local 含 `169.254.169.254` 云元数据 / CGNAT / `localhost.local` 一类本地
+  域名）在解析阶段就拒绝，重定向的**每一跳**和最终落点都复查同一规则；YOLO
+  自动批准审批卡也绕不过它。只查字面量、不做 DNS 解析（fake-ip 代理下逐地址
+  校验既无效又误杀），域名解析到私网 / DNS rebinding 属残余风险，见已知限制。
 
 两个工具返回的内容都是**不可信外部数据**：引擎会在结果前加警告，提示注入面
 （「忽略之前指令」之类的页面文本）由这层警告 + 模型指令共同防。
@@ -325,6 +331,10 @@ shape validator 拦下），唯一通路是 rssh 同款的两步工具（Agent �
 - 用户自定义 Skill 有管理界面（设置 → Interface → 技能），但没有技能市场 / 导入 URL / 版本管理。
 - web_search 的查询脱敏目前只走内置 8 条规则（内网 IP / Token / 密钥），用户自定义
   脱敏规则暂不参与；需要时可以经引擎透传。
+- web_fetch 只拦截 URL 里**字面写出**的非公网 IP / 本地域名；一个公网域名若被
+  DNS 解析到内网地址，或遭遇 DNS rebinding，字面量校验看不到 —— 这类场景仍靠
+  审批卡片兜底，请勿在不可信页面上让模型抓取陌生域名，生产环境建议配合出站
+  代理 / 防火墙策略。
 - 审计日志只在进程内存里累积，不自动落盘；退出即清空，需要留痕请用设置页的导出按钮。
 
 ---
@@ -402,9 +412,11 @@ per-conversation model locking plus history management.
 | Concurrency cap | Settings -> Interface -> AI Copilot | 1-5, stored as `ai_max_parallel`; sending beyond it is refused, never queued |
 | Built-in MCP | Settings -> Interface -> MCP | Existing switches and permission matrix, plus a doc link (`docs/REMOTE_MCP.md`) and a "Settings" line showing the absolute path of `sessions.json` |
 
-Memory is **never distilled automatically**: you write it, or you confirm an AI
-proposal in a card. Acting as an MCP **client** for external servers stays in M3
-behind its own RFC: [docs/AI_MCP_CLIENT_RFC.md](AI_MCP_CLIENT_RFC.md) is a draft and
+Memory is **never distilled automatically**: currently you can only write it
+yourself. The `ai-proposed` source and its persistence path exist, but the
+"AI proposes -> confirm in a card" interaction is **not implemented** yet (see F7
+in AI_PANEL_REQUIREMENTS.md). Acting as an MCP **client** for external servers
+stays in M3 behind its own RFC: [docs/AI_MCP_CLIENT_RFC.md](AI_MCP_CLIENT_RFC.md) is a draft and
 **not implemented** - no external-server connection path may appear in the code
 until the review passes.
 
@@ -611,7 +623,14 @@ from rssh):
 - **web_fetch** fetches one exact URL and converts it to Markdown (full-page
   conversion; script/style are dropped at DOM level, so script text never becomes
   Markdown). 5 MiB response cap, 64 KiB Markdown truncation, and every fetch shows
-  the user an approval card with the URL visible.
+  the user an approval card with the URL visible. A hard egress check also refuses
+  **literal** non-public hosts (loopback / private / link-local incl. the
+  `169.254.169.254` metadata endpoint / CGNAT / `localhost.local`-style domains)
+  at parse time, and re-checks every redirect hop and the final URL; YOLO's
+  auto-approved card cannot bypass it. It inspects literals only, without DNS
+  resolution (per-address checks are ineffective and break real usage behind a
+  fake-ip proxy), so a public domain resolving to a private address / DNS
+  rebinding remains a residual risk covered by the approval card.
 
 Both tools return **untrusted external data**: the engine prefixes the result with a
 warning, and that warning plus the system prompt together cover the prompt-injection
@@ -689,5 +708,9 @@ does not affect a running round.
   there is no skill marketplace, import URL or versioning.
 - web_search query redaction currently uses the built-in eight rules only (private
   IPs / tokens / keys); user-defined redaction rules do not participate yet.
+- web_fetch blocks only **literal** non-public IPs / local domains. A public domain
+  that resolves to a private address (or DNS rebinding) is invisible to that check
+  and still relies on the approval card; pair it with an egress proxy / firewall
+  policy in production.
 - The audit log lives in process memory only and is never written automatically;
   it clears on exit - use the export button on the settings page to keep a copy.

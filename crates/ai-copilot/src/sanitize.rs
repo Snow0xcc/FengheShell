@@ -674,12 +674,12 @@ impl BlCategory {
     }
 }
 
-/// 运行时命令黑名单。两个来源产出同型值、共用 `check_head`：
-///   - `builtin()`：从 5 张 const 表构造（出厂默认 / seed 真值 / 测试基线）；
-///   - DB 物化（见后续阶段的 `command_blacklist::load`）。
+/// 运行时命令黑名单。FengheShell 移植版**只有** `builtin()` 一个来源：从 5 张
+/// const 表构造（出厂默认 / 测试基线），没有 rssh 的 SQLite `command_blacklist`
+/// 表，也不存在 DB 物化 / load 阶段。
 ///
-/// **空名单 = 放行一切**（C 模型：用户显式删空的结果）。区分「空」与「加载失败」
-/// 是调用方的责任：load 失败必须 fail-closed 上抛，绝不退化成空 `Blacklist`。
+/// **空名单 = 放行一切**。注意 `#[derive(Default)]` 产出的是**空表**而非出厂表，
+/// 生产路径必须显式调用 `Blacklist::builtin()`，不要误用 `Default::default()`。
 #[derive(Debug, Clone, Default)]
 pub struct Blacklist(std::collections::HashMap<String, BlCategory>);
 

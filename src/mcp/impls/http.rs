@@ -411,12 +411,12 @@ async fn cleanup(state: &Boundary, all: bool) {
     });
     for id in ids {
         let stale = all
-            || !state
+            || state
                 .owners
                 .lock()
                 .await
                 .get(id.as_ref())
-                .is_some_and(|owner| owner.expires_at > oauth::now());
+                .is_none_or(|owner| owner.expires_at <= oauth::now());
         if stale {
             let _ = tokio::time::timeout(Duration::from_secs(2), state.sessions.close_session(&id))
                 .await;

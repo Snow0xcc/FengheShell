@@ -338,6 +338,21 @@ AI Copilot 的三层解耦与执行约束见 [docs/AI_COPILOT.md](docs/AI_COPILO
   `slint::invoke_from_event_loop` 回调。
 - SSH / SFTP 共享 `known_hosts` 校验逻辑：首次连接会确认并记住主机密钥，
   后续密钥变化会再次提示。
+- **内存吃紧的机器请用 `scripts/cargo-safe.sh` 跑构建与测试。** 本项目单个
+  编译/链接任务的峰值约 3 GiB，`cargo test --workspace` 的默认并发（等于核数）
+  在 16 GiB 机器上会把 rustc 直接 OOM 掉（`signal: 9`）。脚本每次运行前探测本机
+  内存上限、当前占用与 CPU 核数，扣掉留给编辑器的余量后算出并发数，并以 `nice`
+  降低优先级，因此同一份命令在不同规格的开发机上都能用：
+
+  ```bash
+  sh scripts/cargo-safe.sh test --workspace
+  sh scripts/cargo-safe.sh clippy --workspace --all-targets -- -D warnings
+  sh scripts/cargo-safe.sh check            # 改 .slint 后最快的反馈，不链接
+  sh scripts/cargo-safe.sh --explain        # 只看它打算开多少并发
+  ```
+
+  并发数不写死。需要覆盖时用 `FENGHE_JOBS=4`；单任务/固定开销预算见
+  `FENGHE_PER_JOB_MIB` / `FENGHE_FIXED_MIB`。
 
 ## 发版
 
