@@ -673,7 +673,15 @@ export component TerminalView inherits Rectangle {
         property <length> sf-w: root.sftp-collapsed ? 36px
             : root.sftp-horizontal ? max(300px, root.sftp-panel-width)
             : root.sftp-panel-width;
-        property <length> sf-h: root.sftp-collapsed ? 36px : root.sftp-panel-height;
+        // When the bottom dock is collapsed (and the command bar is showing), fold
+        // the SFTP entry into the command bar instead of reserving a separate
+        // 36px strip below it — that strip pushed the command bar off the window
+        // baseline and left an orphan folder icon.
+        property <bool> sftp-in-cmdbar: root.sftp-available && root.sftp-collapsed
+            && root.sftp-dock == "bottom" && !root.cmd-bar-hidden;
+        property <length> sf-h: root.sftp-collapsed
+            ? (sftp-in-cmdbar ? 0px : 36px)
+            : root.sftp-panel-height;
         property <length> sp: root.sftp-collapsed ? 0px : 4px;
         // The collapsed bar (sf-h) already reserves the bottom strip now.
         property <length> bottom-strip-h: 0px;
@@ -1509,6 +1517,28 @@ export component TerminalView inherits Rectangle {
                 padding-top: 4px; padding-bottom: 4px;
                 spacing: 6px;
 
+                // SFTP entry merged into the command bar when the bottom panel is
+                // collapsed (see sftp-in-cmdbar). Replaces the standalone strip.
+                if dock-region.sftp-in-cmdbar : Rectangle {
+                    width: sftp-entry-row.preferred-width + 12px;
+                    border-radius: Theme.radius-sm;
+                    background: sftp-entry-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated;
+                    sftp-entry-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.set-sftp-collapsed(false); }
+                    }
+                    sftp-entry-row := HorizontalLayout {
+                        width: parent.width; height: parent.height;
+                        alignment: center;
+                        spacing: 3px;
+                        Text { text: "\u{E2C7}"; font-family: "Material Icons";
+                               color: Theme.text-secondary; font-size: Theme.fs-md;
+                               vertical-alignment: center; }
+                        Text { text: "SFTP"; color: Theme.text-secondary;
+                               font-size: Theme.fs-sm; vertical-alignment: center; }
+                    }
+                }
+
                 // Quick-command toggle. Once the sidebar has been docked, the
                 // sidebar/icon strip becomes its only entry point (#215).
                 if !root.quick-panel-docked : Rectangle {
@@ -2307,7 +2337,7 @@ export component TerminalView inherits Rectangle {
         }
 
         // --- SFTP panel — positioned on the docked edge ---------------------
-        if root.sftp-available : SftpPanel {
+        if root.sftp-available && !sftp-in-cmdbar : SftpPanel {
             x: root.sftp-dock == "right"  ? parent.width - parent.sf-w : 0px;
             y: root.sftp-dock == "bottom" ? parent.height - parent.sf-h : 0px;
             width:  root.sftp-horizontal ? parent.sf-w : parent.width;
@@ -2417,7 +2447,7 @@ export component TerminalView inherits Rectangle {
 
         // Collapsed → a ToolStrip icon bar at the docked edge (M5), filling the
         // 36px slot the panel shrank to; click the icon to re-expand.
-        if root.sftp-collapsed : ToolStrip {
+        if root.sftp-collapsed && !sftp-in-cmdbar : ToolStrip {
             x: root.sftp-dock == "right"  ? parent.width - parent.sf-w : 0px;
             y: root.sftp-dock == "bottom" ? parent.height - parent.sf-h : 0px;
             width:  root.sftp-horizontal ? parent.sf-w : parent.width;
