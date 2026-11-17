@@ -74,8 +74,8 @@ impl ShellKind {
 
     /// Build the line we paste into the user's terminal: their command +
     /// a marker echo line that carries the exit code. The front-end
-    /// `findSentinel` regex `<marker>:(-?\d+)` matches the marker
-    /// regardless of surrounding quotes.
+    /// `src/app/ai.rs::ExecCapture::feed` finds the marker with `str::find`
+    /// and parses the following exit-code field with `parse::<i32>()`.
     ///
     /// Most callers want `sentinel_command()` (which also generates the
     /// marker UUID). This raw form exists for tests that need a fixed
@@ -93,8 +93,8 @@ impl ShellKind {
             // the LLM toward) it is left untouched, and on a fresh session it is
             // `$null`. `$null` interpolates to empty, so the naive
             // `marker:$LASTEXITCODE` yields `marker:` (no digit) → the front-end
-            // sentinel regex `:(-?\d+)` never matches → the command false-times-out
-            // after 60s even though it succeeded.
+            // cannot parse an exit code in `ExecCapture::feed` → the command
+            // false-times-out after 60s even though it succeeded.
             //
             // Fix: reset `$LASTEXITCODE` first (so a prior native command's code
             // can't leak into a later cmdlet), then coalesce to a digit — use the

@@ -391,7 +391,14 @@ fn tab_session(
         return None;
     }
     let store = store.borrow();
-    let session = store.get(&session_id)?.clone();
+    // 内置本地会话（system:powershell / system:cmd / system:wsl / agent:*）不会
+    // 写进 ConfigStore 的 cache.sessions，所以 store.get() 会漏掉它们 —— 这里
+    // 与连接流程保持一致，回退到 resolve_builtin_session()，否则这些标签的
+    // ShellKind 会错误落到默认的 Posix（AI 就会给 PowerShell 发 uname）。
+    let session = store
+        .get(&session_id)
+        .cloned()
+        .or_else(|| resolve_builtin_session(&store, &session_id))?;
     let jump = store.resolve_jump_chain(&session).unwrap_or_default();
     Some((session, jump))
 }

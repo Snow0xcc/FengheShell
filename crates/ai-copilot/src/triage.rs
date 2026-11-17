@@ -1063,6 +1063,11 @@ impl TriageEngine {
                     message: format!("file_ops execution failed: {e}"),
                 });
                 let mut failed = proposal;
+                failed.outcome = Some(CommandOutcome {
+                    exit_code: None,
+                    output: e.to_string(),
+                    timed_out: false,
+                });
                 failed.disposition = Disposition::Rejected;
                 proposed.push(failed);
                 Err(e)
@@ -1282,6 +1287,15 @@ impl TriageEngine {
                     Err(e) => {
                         self.audit_push(AuditKind::Error {
                             message: format!("command execution failed: {e}"),
+                        });
+                        // 通道失败也要落一个 outcome，否则 message_card 走
+                        // `outcome == None` 分支，卡片会显示灰字 rejected（只读
+                        // 命令甚至是绿色底），而不是醒目的失败态。exit_code 置 None
+                        // 让 UI 显示为红色的 "exit unknown"。
+                        proposal.outcome = Some(CommandOutcome {
+                            exit_code: None,
+                            output: e.to_string(),
+                            timed_out: false,
                         });
                         proposal.disposition = Disposition::Rejected;
                         proposed.push(proposal);
@@ -1954,6 +1968,11 @@ impl TriageEngine {
                     }
                     Err(e) => {
                         let mut failed = proposal;
+                        failed.outcome = Some(CommandOutcome {
+                            exit_code: None,
+                            output: e.to_string(),
+                            timed_out: false,
+                        });
                         failed.disposition = Disposition::Rejected;
                         proposed.push(failed);
                         (

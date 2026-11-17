@@ -2323,70 +2323,6 @@ export component AppWindow inherits Window {
                         select-autoscroll(dir) => { root.term-select-autoscroll(term.id, dir); }
                     }
 
-                // --- AI Copilot 面板（应用级右侧 dock，#ai-copilot） -----------
-                // 只占布局宽度，不覆盖终端：central 已按 ai-panel-width 收缩。
-                // 会话生命周期独立于标签 / 窗口，收起面板不会打断正在跑的一轮。
-                if root.ai-open : Rectangle {
-                    x: parent.width - root.ai-panel-width * 1px;
-                    y: 0px;
-                    width: root.ai-panel-width * 1px;
-                    height: parent.height;
-                    background: Theme.bg-panel;
-                    border-width: 1px;
-                    border-color: Theme.border-subtle;
-
-                    AiPanel {
-                        x: 0px;
-                        y: 0px;
-                        width: parent.width;
-                        height: parent.height;
-                        conversations: root.ai-conversations;
-                        list-open <=> root.ai-list-open;
-                        title: root.ai-title;
-                        anchor-name: root.ai-anchor-name;
-                        panel-width: root.ai-panel-width;
-                        max-parallel: root.ai-max-parallel;
-                        model-name: root.ai-model-name;
-                        profiles: root.ai-model-profiles;
-                        model-list-open <=> root.ai-model-list-open;
-                        memory-enabled <=> root.ai-memory-enabled;
-                        search <=> root.ai-search;
-                        messages: root.ai-messages;
-                        busy: root.ai-busy;
-                        mode <=> root.ai-mode;
-                        starters: root.ai-starters;
-                        protocol: root.ai-protocol;
-                        endpoint: root.ai-endpoint;
-                        model: root.ai-model;
-                        redaction-enabled: root.ai-redaction-enabled;
-                        auto-run-readonly: root.ai-auto-run-readonly;
-                        yolo-mode: root.ai-yolo-mode;
-                        completion-enabled <=> root.ai-completion-enabled;
-                        test-status <=> root.ai-test-status;
-                        test-busy <=> root.ai-test-busy;
-                        toggle-list => { root.ai-toggle-list(); }
-                        new-conversation => { root.ai-new-conversation(); }
-                        select-conversation(id) => { root.ai-select-conversation(id); }
-                        close-conversation(id) => { root.ai-close-conversation(id); }
-                        rename-conversation(id, name) => { root.ai-rename-conversation(id, name); }
-                        set-width(w) => { root.ai-set-width(w); }
-                        set-model(name) => { root.ai-set-model(name); }
-                        set-memory-enabled(v) => { root.ai-set-memory-enabled(v); }
-                        search-changed(q) => { root.ai-search-changed(q); }
-                        export-conversation(id) => { root.ai-export-conversation(id); }
-                        set-mode(m) => { root.ai-set-mode(m); }
-                        set-completion(v) => { root.ai-set-completion(v); }
-                        send(text) => { root.ai-send(text); }
-                        clear() => { root.ai-clear(); }
-                        cancel() => { root.ai-cancel(); }
-                        run-card(id) => { root.ai-run-card(id); }
-                        reject-card(id) => { root.ai-reject-card(id); }
-                        apply-settings(p, e, m, k, r, a) => { root.ai-apply-settings(p, e, m, k, r, a); }
-                        test-connection(p, e, m, k) => { root.ai-test-connection(p, e, m, k); }
-                        close() => { root.ai-toggle-panel(); }
-                    }
-                }
-
 
                     // Editor tabs (#494): same show-by-active-id scheme as the
                     // terminals above. Only the editor is shown — no SFTP panel
@@ -2476,6 +2412,70 @@ export component AppWindow inherits Window {
                     border-color: Theme.accent;
                     border-radius: Theme.radius-sm;
                 }
+                }
+            }
+
+            // --- AI Copilot 面板（应用级右侧 dock，#ai-copilot） -----------
+            // 只占布局宽度，不覆盖终端：central 已按 ai-panel-width 收缩。
+            // 会话生命周期独立于标签 / 窗口，收起面板不会打断正在跑的一轮。
+            if root.ai-open : Rectangle {
+                x: parent.width - root.ai-panel-width * 1px;
+                y: 0px;
+                width: root.ai-panel-width * 1px;
+                height: parent.height;
+                background: Theme.bg-panel;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+
+                AiPanel {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    conversations: root.ai-conversations;
+                    list-open <=> root.ai-list-open;
+                    title: root.ai-title;
+                    anchor-name: root.ai-anchor-name;
+                    panel-width: root.ai-panel-width;
+                    max-parallel: root.ai-max-parallel;
+                    model-name: root.ai-model-name;
+                    profiles: root.ai-model-profiles;
+                    model-list-open <=> root.ai-model-list-open;
+                    memory-enabled <=> root.ai-memory-enabled;
+                    search <=> root.ai-search;
+                    messages: root.ai-messages;
+                    busy: root.ai-busy;
+                    mode <=> root.ai-mode;
+                    starters: root.ai-starters;
+                    protocol: root.ai-protocol;
+                    endpoint: root.ai-endpoint;
+                    model: root.ai-model;
+                    redaction-enabled: root.ai-redaction-enabled;
+                    auto-run-readonly: root.ai-auto-run-readonly;
+                    yolo-mode: root.ai-yolo-mode;
+                    completion-enabled <=> root.ai-completion-enabled;
+                    test-status <=> root.ai-test-status;
+                    test-busy <=> root.ai-test-busy;
+                    toggle-list => { root.ai-toggle-list(); }
+                    new-conversation => { root.ai-new-conversation(); }
+                    select-conversation(id) => { root.ai-select-conversation(id); }
+                    close-conversation(id) => { root.ai-close-conversation(id); }
+                    rename-conversation(id, name) => { root.ai-rename-conversation(id, name); }
+                    set-width(w) => { root.ai-set-width(w); }
+                    set-model(name) => { root.ai-set-model(name); }
+                    set-memory-enabled(v) => { root.ai-set-memory-enabled(v); }
+                    search-changed(q) => { root.ai-search-changed(q); }
+                    export-conversation(id) => { root.ai-export-conversation(id); }
+                    set-mode(m) => { root.ai-set-mode(m); }
+                    set-completion(v) => { root.ai-set-completion(v); }
+                    send(text) => { root.ai-send(text); }
+                    clear() => { root.ai-clear(); }
+                    cancel() => { root.ai-cancel(); }
+                    run-card(id) => { root.ai-run-card(id); }
+                    reject-card(id) => { root.ai-reject-card(id); }
+                    apply-settings(p, e, m, k, r, a) => { root.ai-apply-settings(p, e, m, k, r, a); }
+                    test-connection(p, e, m, k) => { root.ai-test-connection(p, e, m, k); }
+                    close() => { root.ai-toggle-panel(); }
                 }
             }
 
