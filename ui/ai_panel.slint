@@ -968,14 +968,20 @@ export component AiPanel inherits Rectangle {
                             wrap: word-wrap;
                         }
                         for s in root.starters : Rectangle {
+                            // A plain Rectangle has no intrinsic size (preferred = 0);
+                            // size it explicitly from the inner row's preferred size.
+                            height: starter-row.preferred-height;
+                            width: starter-row.preferred-width + 8px;
                             border-radius: Theme.radius-md;
                             background: starter-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated;
                             border-width: 1px;
                             border-color: Theme.border-subtle;
                             starter-ta := TouchArea {
+                                width: parent.width;
+                                height: parent.height;
                                 clicked => { root.send(s); }
                             }
-                            HorizontalLayout {
+                            starter-row := HorizontalLayout {
                                 padding: 8px;
                                 spacing: 6px;
                                 Text {
@@ -996,7 +1002,7 @@ export component AiPanel inherits Rectangle {
                         }
                     }
 
-                    for msg in root.messages : Rectangle {
+                    for msg in root.messages : VerticalLayout {
                         if msg.role == 2 : AiCommandCard {
                             message: msg;
                             run-card(id) => { root.run-card(id); }
