@@ -319,6 +319,10 @@ jobs:
     name: linux-x86_64-flatpak
     needs: [check-version, build]
     runs-on: ubuntu-24.04
+    # Optional package format: the flathub builder container intermittently
+    # fails on runner storage ('Invalid cross-device link' / xvfb segfault).
+    # Don't block the release's primary artifacts on it.
+    continue-on-error: true
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
       options: --privileged
