@@ -622,8 +622,13 @@ fn contains_cjk(s: &str) -> bool {
 }
 
 /// 16-colour ANSI palette for **dark** terminals (VS Code "Dark+" values).
+///
+/// Slot 0 (black) is lifted off pure black: on a near-black terminal background
+/// a literal #000000 makes ANSI-black text / p10k segment backgrounds invisible.
+/// Slot 8 (bright black) is a readable slate so p10k/powerlevel separator text
+/// around glyphs stays legible.
 const ANSI16_DARK: [(u8, u8, u8); 16] = [
-    (0x00, 0x00, 0x00), // 0  black
+    (0x2a, 0x2d, 0x36), // 0  black        → lifted off pure black (visible on dark bg)
     (0xcd, 0x31, 0x31), // 1  red
     (0x0d, 0xbc, 0x79), // 2  green
     (0xe5, 0xe5, 0x10), // 3  yellow
@@ -631,7 +636,7 @@ const ANSI16_DARK: [(u8, u8, u8); 16] = [
     (0xbc, 0x3f, 0xbc), // 5  magenta
     (0x11, 0xa8, 0xcd), // 6  cyan
     (0xe5, 0xe5, 0xe5), // 7  white        (light grey on dark bg)
-    (0x66, 0x66, 0x66), // 8  bright black
+    (0x6b, 0x72, 0x80), // 8  bright black → readable slate (was #666666)
     (0xf1, 0x4c, 0x4c), // 9  bright red
     (0x23, 0xd1, 0x8b), // 10 bright green
     (0xf5, 0xf5, 0x43), // 11 bright yellow
