@@ -68,8 +68,13 @@ export global Theme {
     // Active terminal tab: with wallpaper, pull from the image's average colour
     // so the strip feels immersed; without wallpaper, make the active tab one
     // clear step darker/lighter than the surrounding tab bar (#200).
+    // In light mode the derived colour can end up dark (e.g. a deep accent over a
+    // light image), which made the fixed dark `text-primary` unreadable — brighten
+    // it so dark-on-light text keeps enough contrast.
     out property <brush> tab-active-bg: root.wallpaper-active
-        ? root.wp-tint.mix(root.wp-accent, 0.68).with-alpha(min(1.0, root.panel-alpha + 0.10))
+        ? root.wp-tint.mix(root.wp-accent, 0.68)
+            .brighter(dark ? 0.0 : 0.55)
+            .with-alpha(min(1.0, root.panel-alpha + 0.10))
         : (dark ? #171a20 : #ffffff);
     out property <brush> tab-active-border: root.wallpaper-active
         ? root.wp-accent.with-alpha(0.72)

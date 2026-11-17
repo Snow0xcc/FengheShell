@@ -754,6 +754,9 @@ msgstr "Stop"
 msgid "AI"
 msgstr "AI"
 
+msgid "Thinking..."
+msgstr "Thinking..."
+
 msgid "Protocol (openai-completions | deepseek-thinking | anthropic-messages | ollama)"
 msgstr "Protocol (openai-completions | deepseek-thinking | anthropic-messages | ollama)"
 

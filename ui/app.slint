@@ -452,8 +452,11 @@ export component AppWindow inherits Window {
     callback persist-sidebar-dock(string);
     // The top-right toolbar icons float over the tab row; when the sidebar docks
     // top/right it covers that corner, so shift the icons to stay over the tabs.
+    // When the Copilot panel is open it also occupies the right edge, so shift
+    // by its width too — otherwise the icons land on top of the AI panel's
+    // Ask/Agent header and intercept its clicks (#ai-copilot).
     property <length> toolbar-x-off:
-        root.dock-right-gap + 4px;
+        root.dock-right-gap + 4px + (root.ai-open ? root.ai-panel-width * 1px : 0px);
     property <length> toolbar-y-off:
         root.dock-top-gap;
     property <length> toolbar-y:

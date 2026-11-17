@@ -923,6 +923,10 @@ export component AiPanel inherits Rectangle {
                     width: chat-scroll.visible-width;
                     padding: 8px;
                     spacing: 8px;
+                    // Pack messages at the top and keep each at its natural height.
+                    // Without this the layout stretches rows to fill the viewport
+                    // (a one-line question grew into a half-screen tall bubble).
+                    alignment: start;
                     // 空会话时的起手建议（Copilot 的 starter suggestions）
                     if root.messages.length == 0 : VerticalLayout {
                         spacing: 6px;
@@ -966,6 +970,9 @@ export component AiPanel inherits Rectangle {
                     }
 
                     for msg in root.messages : Rectangle {
+                        // Natural height only — never let a message row stretch to
+                        // fill the vertical layout's leftover space.
+                        vertical-stretch: 0;
                         if msg.role == 2 : AiCommandCard {
                             message: msg;
                             run-card(id) => { root.run-card(id); }
@@ -975,6 +982,7 @@ export component AiPanel inherits Rectangle {
                         if msg.role == 0 : HorizontalLayout {
                             alignment: end;
                             Rectangle {
+                                vertical-stretch: 0;
                                 max-width: parent.width * 0.86;
                                 border-radius: Theme.radius-md;
                                 background: Theme.bg-elevated;
@@ -1068,6 +1076,26 @@ export component AiPanel inherits Rectangle {
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    // 生成中的可见反馈：避免看起来像卡死（停止按钮在输入区，
+                    // 但聊天区完全静止会让人以为无响应）。
+                    if root.busy : HorizontalLayout {
+                        alignment: start;
+                        spacing: 6px;
+                        Text {
+                            text: "\u{E838}";   // 星标：与 Copilot 入口一致
+                            font-family: "Material Icons";
+                            font-size: 14px;
+                            color: Theme.accent;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: @tr("Thinking...");
+                            color: Theme.text-muted;
+                            font-size: Theme.fs-sm;
+                            vertical-alignment: center;
                         }
                     }
                 }

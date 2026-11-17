@@ -748,6 +748,9 @@ msgstr "AI"
 msgid "Diagnosing..."
 msgstr "诊断中..."
 
+msgid "Thinking..."
+msgstr "思考中..."
+
 msgid "AI Copilot"
 msgstr "AI Copilot"
 
