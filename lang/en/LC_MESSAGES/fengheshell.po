@@ -757,6 +757,18 @@ msgstr "AI"
 msgid "Thinking..."
 msgstr "Thinking..."
 
+msgid "New conversation"
+msgstr "New conversation"
+
+msgid "Toggle panel width"
+msgstr "Toggle panel width"
+
+msgid "LLM settings"
+msgstr "LLM settings"
+
+msgid "Clear conversation"
+msgstr "Clear conversation"
+
 msgid "Protocol (openai-completions | deepseek-thinking | anthropic-messages | ollama)"
 msgstr "Protocol (openai-completions | deepseek-thinking | anthropic-messages | ollama)"
 
@@ -768,4 +780,3 @@ msgstr "Redact secrets locally"
 
 msgid "Auto-run read-only commands"
 msgstr "Auto-run read-only commands"
-

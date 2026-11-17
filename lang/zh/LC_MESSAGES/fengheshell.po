@@ -751,6 +751,18 @@ msgstr "诊断中..."
 msgid "Thinking..."
 msgstr "思考中..."
 
+msgid "New conversation"
+msgstr "新建会话"
+
+msgid "Toggle panel width"
+msgstr "切换面板宽度"
+
+msgid "LLM settings"
+msgstr "模型设置"
+
+msgid "Clear conversation"
+msgstr "清空对话"
+
 msgid "AI Copilot"
 msgstr "AI Copilot"
 
@@ -765,4 +777,3 @@ msgstr "本地脱敏"
 
 msgid "Auto-run read-only commands"
 msgstr "只读命令免确认执行"
-

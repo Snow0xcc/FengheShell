@@ -282,6 +282,7 @@ export component AiPanel inherits Rectangle {
     callback apply-settings(string, string, string, string, bool, bool);
 
     property <bool> settings-open: false;
+    property <bool> more-open: false;
     property <string> edit-protocol: root.protocol;
     property <string> edit-endpoint: root.endpoint;
     property <string> edit-model: root.model;
@@ -311,7 +312,9 @@ export component AiPanel inherits Rectangle {
     VerticalLayout {
         spacing: 0;
 
-        // --- 标题栏：星标 + Copilot + Ask/Agent 模式 --------------------
+        // --- 标题栏 --------------------------------------------------------
+        // 360px 窄档下只留星标 / 标题 / 更多 / 关闭；新建、宽度、设置、清空
+        // 收进「更多」菜单 —— 旧版一排 chip 在 360px 会把标题挤没甚至溢出。
         Rectangle {
             height: 36px;
             background: Theme.bg-panel-alt;
@@ -320,13 +323,12 @@ export component AiPanel inherits Rectangle {
                 padding-right: 6px;
                 spacing: 6px;
                 Text {
-                    text: "\u{E838}";   // 五芒星：Copilot 入口标识
+                    text: "\u{E838}";
                     font-family: "Material Icons";
                     font-size: 16px;
                     color: Theme.accent;
                     vertical-alignment: center;
                 }
-                // 标题按钮：点击展开会话列表（Copilot 风格）。
                 title-btn := Rectangle {
                     horizontal-stretch: 1;
                     height: parent.height;
@@ -334,7 +336,7 @@ export component AiPanel inherits Rectangle {
                     border-radius: Theme.radius-sm;
                     title-ta := TouchArea {
                         mouse-cursor: pointer;
-                        clicked => { root.toggle-list(); }
+                        clicked => { root.toggle-list(); root.more-open = false; root.model-list-open = false; }
                     }
                     HorizontalLayout {
                         padding-left: 4px;
@@ -356,9 +358,45 @@ export component AiPanel inherits Rectangle {
                         }
                     }
                 }
-                // 模型 chip（F2）：显示这条会话锁定的模型，点开切换 / 查看全部。
+                more-ta := TouchArea {
+                    width: 24px;
+                    height: parent.height;
+                    clicked => { root.more-open = !root.more-open; root.list-open = false; root.model-list-open = false; }
+                    Text {
+                        text: "\u{E5D4}";
+                        font-family: "Material Icons";
+                        font-size: 18px;
+                        color: more-ta.has-hover || root.more-open ? Theme.accent : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                close-ta := TouchArea {
+                    width: 24px;
+                    height: parent.height;
+                    clicked => { root.close(); }
+                    Text {
+                        text: "\u{E5CD}";
+                        font-family: "Material Icons";
+                        font-size: 15px;
+                        color: close-ta.has-hover ? Theme.danger : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // --- 次级工具栏：模型 chip + Ask/Agent（窄档也不挤）----------------
+        Rectangle {
+            height: 30px;
+            background: Theme.bg-panel;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 6px;
+                spacing: 6px;
                 model-chip := Rectangle {
-                    width: 96px;
+                    horizontal-stretch: 1;
                     height: 20px;
                     border-radius: 10px;
                     background: root.model-list-open ? Theme.bg-active : Theme.bg-elevated;
@@ -366,7 +404,7 @@ export component AiPanel inherits Rectangle {
                     border-color: Theme.border-subtle;
                     model-ta := TouchArea {
                         mouse-cursor: pointer;
-                        clicked => { root.model-list-open = !root.model-list-open; root.list-open = false; }
+                        clicked => { root.model-list-open = !root.model-list-open; root.list-open = false; root.more-open = false; }
                     }
                     HorizontalLayout {
                         padding-left: 6px;
@@ -389,15 +427,12 @@ export component AiPanel inherits Rectangle {
                         }
                     }
                 }
-                // Ask / Agent 模式切换（Copilot 的能力分层）。
                 ask-chip := Rectangle {
                     width: 44px;
                     height: 20px;
                     border-radius: 10px;
                     background: root.mode != "agent" ? Theme.accent : Theme.bg-elevated;
-                    ask-ta := TouchArea {
-                        clicked => { root.set-mode("ask"); }
-                    }
+                    ask-ta := TouchArea { clicked => { root.set-mode("ask"); } }
                     Text {
                         text: "Ask";
                         color: root.mode != "agent" ? #ffffff : Theme.text-secondary;
@@ -411,9 +446,7 @@ export component AiPanel inherits Rectangle {
                     height: 20px;
                     border-radius: 10px;
                     background: root.mode == "agent" ? Theme.accent : Theme.bg-elevated;
-                    agent-ta := TouchArea {
-                        clicked => { root.set-mode("agent"); }
-                    }
+                    agent-ta := TouchArea { clicked => { root.set-mode("agent"); } }
                     Text {
                         text: "Agent";
                         color: root.mode == "agent" ? #ffffff : Theme.text-secondary;
@@ -422,66 +455,60 @@ export component AiPanel inherits Rectangle {
                         vertical-alignment: center;
                     }
                 }
-                // 新建会话（Ctrl+Shift+O）。
-                new-ta := TouchArea {
-                    width: 24px;
-                    clicked => { root.new-conversation(); }
-                    Text {
-                        text: "\u{E145}";
-                        font-family: "Material Icons";
-                        font-size: 15px;
-                        color: new-ta.has-hover ? Theme.accent : Theme.text-secondary;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+            }
+        }
+
+        // --- 「更多」菜单：新建 / 宽度 / 设置 / 清空 ------------------------
+        if root.more-open : Rectangle {
+            height: 126px;
+            background: Theme.bg-elevated;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+            VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
+                Rectangle {
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: more-new-ta.has-hover ? Theme.bg-hover : transparent;
+                    more-new-ta := TouchArea { clicked => { root.new-conversation(); root.more-open = false; } }
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; spacing: 8px;
+                        Text { text: "\u{E145}"; font-family: "Material Icons"; font-size: 14px; color: Theme.accent; vertical-alignment: center; }
+                        Text { text: @tr("New conversation"); color: Theme.text-primary; font-size: Theme.fs-sm; vertical-alignment: center; horizontal-stretch: 1; }
                     }
                 }
-                // 宽度两档：360 / 520（不做拖拽，见需求 D1）。
-                width-ta := TouchArea {
-                    width: 24px;
-                    clicked => { root.set-width(root.panel-width >= 520 ? 360 : 520); }
-                    Text {
-                        text: root.panel-width >= 520 ? "\u{E8A0}" : "\u{E89F}";
-                        font-family: "Material Icons";
-                        font-size: 15px;
-                        color: width-ta.has-hover ? Theme.accent : Theme.text-secondary;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                Rectangle {
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: more-width-ta.has-hover ? Theme.bg-hover : transparent;
+                    more-width-ta := TouchArea { clicked => { root.set-width(root.panel-width >= 520 ? 360 : 520); root.more-open = false; } }
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; spacing: 8px;
+                        Text { text: "\u{E8A0}"; font-family: "Material Icons"; font-size: 14px; color: Theme.text-secondary; vertical-alignment: center; }
+                        Text { text: @tr("Toggle panel width"); color: Theme.text-primary; font-size: Theme.fs-sm; vertical-alignment: center; horizontal-stretch: 1; }
                     }
                 }
-                gear-ta := TouchArea {
-                    width: 24px;
-                    clicked => { root.settings-open = !root.settings-open; }
-                    Text {
-                        text: "\u{E8B8}";
-                        font-family: "Material Icons";
-                        font-size: 15px;
-                        color: gear-ta.has-hover ? Theme.accent : Theme.text-secondary;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                Rectangle {
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: more-gear-ta.has-hover ? Theme.bg-hover : transparent;
+                    more-gear-ta := TouchArea { clicked => { root.settings-open = !root.settings-open; root.more-open = false; } }
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; spacing: 8px;
+                        Text { text: "\u{E8B8}"; font-family: "Material Icons"; font-size: 14px; color: Theme.text-secondary; vertical-alignment: center; }
+                        Text { text: @tr("LLM settings"); color: Theme.text-primary; font-size: Theme.fs-sm; vertical-alignment: center; horizontal-stretch: 1; }
                     }
                 }
-                clear-ta := TouchArea {
-                    width: 24px;
-                    clicked => { root.clear(); }
-                    Text {
-                        text: "\u{E872}";
-                        font-family: "Material Icons";
-                        font-size: 15px;
-                        color: clear-ta.has-hover ? Theme.accent : Theme.text-secondary;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-                close-ta := TouchArea {
-                    width: 24px;
-                    clicked => { root.close(); }
-                    Text {
-                        text: "\u{E5CD}";
-                        font-family: "Material Icons";
-                        font-size: 15px;
-                        color: close-ta.has-hover ? Theme.danger : Theme.text-secondary;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                Rectangle {
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: more-clear-ta.has-hover ? Theme.bg-hover : transparent;
+                    more-clear-ta := TouchArea { clicked => { root.clear(); root.more-open = false; } }
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; spacing: 8px;
+                        Text { text: "\u{E872}"; font-family: "Material Icons"; font-size: 14px; color: Theme.text-secondary; vertical-alignment: center; }
+                        Text { text: @tr("Clear conversation"); color: Theme.text-primary; font-size: Theme.fs-sm; vertical-alignment: center; horizontal-stretch: 1; }
                     }
                 }
             }
