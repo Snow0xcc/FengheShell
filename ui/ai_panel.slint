@@ -968,10 +968,10 @@ export component AiPanel inherits Rectangle {
                             wrap: word-wrap;
                         }
                         for s in root.starters : Rectangle {
-                            // A plain Rectangle has no intrinsic size (preferred = 0);
-                            // size it explicitly from the inner row's preferred size.
-                            height: starter-row.preferred-height;
-                            width: starter-row.preferred-width + 8px;
+                            // Fixed-height, full-width pill: avoids relying on a
+                            // plain Rectangle's (zero) intrinsic preferred size.
+                            height: 40px;
+                            width: parent.width;
                             border-radius: Theme.radius-md;
                             background: starter-ta.has-hover ? Theme.bg-hover : Theme.bg-elevated;
                             border-width: 1px;
@@ -982,6 +982,7 @@ export component AiPanel inherits Rectangle {
                                 clicked => { root.send(s); }
                             }
                             starter-row := HorizontalLayout {
+                                height: parent.height;
                                 padding: 8px;
                                 spacing: 6px;
                                 Text {
