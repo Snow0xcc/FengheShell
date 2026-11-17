@@ -1137,6 +1137,16 @@ export component AiPanel inherits Rectangle {
                     border-width: 1px;
                     border-color: input.has-focus ? Theme.accent : Theme.border-strong;
                     background: Theme.bg-root;
+                    if input.text == "" : Text {
+                        x: 8px;
+                        width: parent.width - 48px;
+                        height: parent.height;
+                        text: @tr("Ask about this system or session…");
+                        color: Theme.text-muted;
+                        font-size: Theme.fs-sm;
+                        horizontal-alignment: left;
+                        vertical-alignment: center;
+                    }
                     HorizontalLayout {
                         padding: 4px;
                         spacing: 6px;
@@ -1144,7 +1154,6 @@ export component AiPanel inherits Rectangle {
                             horizontal-stretch: 1;
                             single-line: true;
                             text: "";
-                            placeholder-text: @tr("Ask about this system or session…");
                             font-family: Theme.ui-font-family;
                             font-size: Theme.fs-sm;
                             color: Theme.text-primary;
