@@ -57,6 +57,7 @@ enum StartMode {
     Cli,
     App,
     Version,
+    Help,
 }
 
 impl StartMode {
@@ -65,6 +66,7 @@ impl StartMode {
             Some("mcp") if args.get(2).is_some_and(|arg| arg == "serve") => Self::Mcp,
             Some("cli") => Self::Cli,
             _ if args.iter().any(|arg| arg == "--version" || arg == "-V") => Self::Version,
+            _ if args.iter().any(|arg| arg == "--help" || arg == "-h") => Self::Help,
             _ => Self::App,
         }
     }
@@ -97,6 +99,21 @@ fn main() -> anyhow::Result<()> {
     let mode = StartMode::detect(&args);
     if matches!(mode, StartMode::Version) {
         println!("fengheshell {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if matches!(mode, StartMode::Help) {
+        println!("FengheShell {}", env!("CARGO_PKG_VERSION"));
+        println!();
+        println!("Usage:");
+        println!("  fengheshell                  Launch the desktop client");
+        println!("  fengheshell --version         Print version (-V)");
+        println!("  fengheshell --help            Print this help (-h)");
+        println!("  fengheshell cli <command>     Headless CLI (run 'fengheshell cli help')");
+        println!("  fengheshell mcp serve         MCP stdio server");
+        println!("  fengheshell mcp serve --http-config <path>");
+        println!("                               MCP authenticated HTTP server");
+        println!("  fengheshell --config-info     Print data dir / version as JSON");
+        println!("  fengheshell --new-window      Ask a running instance to open a window");
         return Ok(());
     }
 
@@ -146,6 +163,7 @@ fn main() -> anyhow::Result<()> {
             app::run(intent)
         }
         StartMode::Version => unreachable!("handled above"),
+        StartMode::Help => unreachable!("handled above"),
     }
 }
 
@@ -219,6 +237,11 @@ mod tests {
 
         let version = vec!["fengheshell".to_string(), "--version".to_string()];
         assert!(matches!(StartMode::detect(&version), StartMode::Version));
+
+        let help = vec!["fengheshell".to_string(), "--help".to_string()];
+        assert!(matches!(StartMode::detect(&help), StartMode::Help));
+        let short_help = vec!["fengheshell".to_string(), "-h".to_string()];
+        assert!(matches!(StartMode::detect(&short_help), StartMode::Help));
 
         let app = vec!["fengheshell".to_string()];
         assert!(matches!(StartMode::detect(&app), StartMode::App));

@@ -223,11 +223,9 @@ fn every_app_modal_cancels_after_keyboard_navigation() {
             for _ in 0..32 {
                 key(&window, Key::Backtab);
             }
-            let command = if cfg!(target_os = "macos") {
-                Key::Meta
-            } else {
-                Key::Control
-            };
+            // Slint normalizes macOS Command to the logical Control modifier
+            // (as the winit backend does), and ModalScope checks `control`.
+            let command = Key::Control;
             window.dispatch_event(WindowEvent::KeyPressed {
                 text: command.into(),
             });

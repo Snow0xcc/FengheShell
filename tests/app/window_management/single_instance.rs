@@ -8,10 +8,25 @@ use std::sync::mpsc;
 /// earlier run under a reused pid. This is a unix-socket path on unix and a
 /// TCP port-file path on Windows (see `single_instance` module docs).
 fn temp_socket_path(test_name: &str) -> std::path::PathBuf {
+    // macOS limits sun_path to 104 bytes. TMPDIR can already be ~50 bytes here,
+    // so keep both the dir and file names short: a stable hash of the test name
+    // stays unique per test while the full name did not fit.
+    let mut hash: u32 = 0x811c9dc5;
+    for b in test_name.bytes() {
+        hash ^= b as u32;
+        hash = hash.wrapping_mul(0x01000193);
+    }
     let n = std::process::id();
-    let dir = std::env::temp_dir().join(format!("fengheshell-si-{n}"));
+    // Some CI / agent sandboxes point TMPDIR deep under a per-session folder
+    // (e.g. /private/var/folders/.../T/zed-agent-terminal-XXXX), which alone can
+    // exceed sun_path's 104 bytes on macOS. Use /tmp directly on unix so the
+    // socket path always fits; Windows uses a port file and is unaffected.
+    #[cfg(unix)]
+    let dir = std::path::PathBuf::from("/tmp").join(format!("fhsi-{n}"));
+    #[cfg(not(unix))]
+    let dir = std::env::temp_dir().join(format!("fhsi-{n}"));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join(format!("ipc-{test_name}.sock"));
+    let path = dir.join(format!("s-{hash:08x}.sock"));
     let _ = std::fs::remove_file(&path);
     path
 }

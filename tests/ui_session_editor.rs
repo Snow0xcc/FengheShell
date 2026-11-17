@@ -128,11 +128,9 @@ fn release(window: &MinimalSoftwareWindow, x: f32, y: f32) {
 }
 fn copy(window: &MinimalSoftwareWindow) {
     use slint::platform::Key;
-    let modifier = if cfg!(target_os = "macos") {
-        Key::Meta
-    } else {
-        Key::Control
-    };
+    // Slint normalizes macOS Command to the logical Control modifier
+    // (as the winit backend does), so always drive shortcuts with Control.
+    let modifier = Key::Control;
     for text in [slint::SharedString::from(modifier), "c".into()] {
         window.dispatch_event(WindowEvent::KeyPressed { text });
     }
@@ -355,11 +353,9 @@ fn session_cancel_shortcuts_work_on_open_and_in_focused_inputs() {
         );
         ui.set_covered(false);
         settle();
-        let command = if cfg!(target_os = "macos") {
-            Key::Meta
-        } else {
-            Key::Control
-        };
+        // Slint normalizes macOS Command to the logical Control modifier
+        // (as the winit backend does), and the dialog checks `control`.
+        let command = Key::Control;
         window.dispatch_event(WindowEvent::KeyPressed {
             text: command.into(),
         });
