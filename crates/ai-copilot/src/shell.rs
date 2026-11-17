@@ -214,10 +214,10 @@ impl ShellKind {
             Self::Powershell => (
                 "`Get-Process`, `Get-NetIPAddress`, `Get-Command python`, `Get-ChildItem`, `$PSVersionTable`",
                 "`$LASTEXITCODE`",
-                "Windows PowerShell. `;` separates statements. \
+                "Windows PowerShell. `;` separates statements. Windows PowerShell 5.1 does not support `&&` or `||`; use `;` to run consecutive statements. \
                  **Critical**: `$?` is a BOOLEAN (True/False), NOT the exit code — use `$LASTEXITCODE` for the numeric exit code of native commands. \
                  Variables are `$Name`. Use cmdlets (`Get-X` / `Set-X`) over external binaries when both exist. \
-                 Redirect to `$null` (PS) not `/dev/null`.",
+                 Redirect to `$null` (PS) not `/dev/null`. For OS details use `$PSVersionTable` or `Get-CimInstance Win32_OperatingSystem`, never `uname` or `/etc/*`.",
             ),
             Self::Serial | Self::Telnet => {
                 unreachable!("raw devices handled by the early returns above")
@@ -255,6 +255,18 @@ impl ShellKind {
             "cmd" => Self::Cmd,
             "powershell" | "pwsh" => Self::Powershell,
             _ => Self::Posix, // bash, zsh, fish, sh, dash, ksh, nu, xonsh, ...
+        }
+    }
+
+    /// Resolve a FengheShell local-shell profile before falling back to the
+    /// process environment. The profile is authoritative: a WSL profile runs
+    /// a POSIX shell even when the host application is Windows.
+    pub fn from_local_session(host: &str, fallback_path: &str) -> Self {
+        match host {
+            "powershell" => Self::Powershell,
+            "cmd" => Self::Cmd,
+            "wsl" => Self::Posix,
+            _ => Self::from_local_path(fallback_path),
         }
     }
 }
@@ -351,6 +363,26 @@ mod tests {
         );
         assert_eq!(ShellKind::from_local_path("/usr/bin/nu"), ShellKind::Posix);
         assert_eq!(ShellKind::from_local_path("xonsh.exe"), ShellKind::Posix);
+    }
+
+    #[test]
+    fn local_session_host_overrides_host_process_shell() {
+        assert_eq!(
+            ShellKind::from_local_session("powershell", "/bin/bash"),
+            ShellKind::Powershell
+        );
+        assert_eq!(
+            ShellKind::from_local_session("cmd", "/bin/bash"),
+            ShellKind::Cmd
+        );
+        assert_eq!(
+            ShellKind::from_local_session("wsl", "powershell.exe"),
+            ShellKind::Posix
+        );
+        assert_eq!(
+            ShellKind::from_local_session("shell", "/bin/zsh"),
+            ShellKind::Posix
+        );
     }
 
     #[test]

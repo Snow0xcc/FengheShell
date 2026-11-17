@@ -1044,13 +1044,16 @@ impl TriageEngine {
                 self.audit_push(AuditKind::CommandExecuted {
                     id: proposal.id.clone(),
                     exit_code: outcome.exit_code.unwrap_or(-1),
-                    output_redacted: t.text,
+                    output_redacted: t.text.clone(),
                     original_bytes: t.original_bytes,
                     truncated_bytes: t.truncated_bytes,
                     duration_ms: started_at.elapsed().as_millis() as u64,
                 });
                 let mut done = proposal;
-                done.outcome = Some(outcome.clone());
+                done.outcome = Some(CommandOutcome {
+                    output: t.text,
+                    ..outcome.clone()
+                });
                 done.disposition = Disposition::Executed;
                 proposed.push(done);
                 Ok(Some(outcome))
@@ -1265,7 +1268,12 @@ impl TriageEngine {
                         });
                         // 上游语义：超时 / 非零退出都算工具错误，LLM 才知道要调整。
                         let is_error = outcome.timed_out || outcome.exit_code != Some(0);
-                        proposal.outcome = Some(outcome);
+                        // Keep the UI card's saved output on the same redacted
+                        // and bounded path as the tool result sent to the model.
+                        proposal.outcome = Some(CommandOutcome {
+                            output: t.text.clone(),
+                            ..outcome
+                        });
                         proposal.disposition = Disposition::Executed;
                         proposed.push(proposal);
                         let summary: String = input.cmd.chars().take(60).collect();
@@ -2852,7 +2860,9 @@ mod tests {
             .push("py3=1 perl=1 diff=1\n".into());
         rt.exec_outputs.lock().unwrap().push((
             Some(0),
-            match_payload(r#"{"count":2,"matches":[{"line":12,"context":"timeout = 30"}]}"#),
+            match_payload(
+                r#"{"count":2,"matches":[{"line":12,"context":"timeout = 30 AKIAIOSFODNN7EXAMPLE"}]}"#,
+            ),
         ));
         let eng = engine(
             vec![
@@ -2879,6 +2889,8 @@ mod tests {
         assert!(!out.tool_log.last().unwrap().is_error);
         assert_eq!(out.proposed.len(), 1);
         assert_eq!(out.proposed[0].disposition, Disposition::Executed);
+        let card_output = &out.proposed[0].outcome.as_ref().unwrap().output;
+        assert!(!card_output.contains("AKIAIOSFODNN7EXAMPLE"));
     }
 
     #[tokio::test]

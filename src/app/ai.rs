@@ -323,18 +323,32 @@ fn upsert_card(rows: &mut Vec<AiMessage>, card: AiMessage) {
 }
 
 pub(super) fn message_card(p: &ProposedCommand) -> AiMessage {
+    let outcome = p.outcome.as_ref();
+    let failed = outcome.is_some_and(|result| result.timed_out || result.exit_code != Some(0));
+    let disposition = match outcome {
+        Some(result) if result.timed_out => "timed out".to_string(),
+        Some(result) => match result.exit_code {
+            Some(0) => "executed · exit 0".to_string(),
+            Some(code) => format!("failed · exit {code}"),
+            None => "exit unknown".to_string(),
+        },
+        None => disposition_tag(p.disposition).to_string(),
+    };
     AiMessage {
         role: ROLE_CARD,
-        text: String::new().into(),
+        text: outcome
+            .map(|result| result.output.clone())
+            .unwrap_or_default()
+            .into(),
         card_id: p.id.clone().into(),
         cmd: p.cmd.clone().into(),
         explain: p.explain.clone().into(),
         side_effect: p.side_effect.clone().into(),
         risk: risk_tag(p.risk).into(),
         gate: gate_tag(p.gate).into(),
-        disposition: disposition_tag(p.disposition).into(),
+        disposition: disposition.into(),
         blocked_reason: p.blocked_reason.clone().unwrap_or_default().into(),
-        step_failed: false,
+        step_failed: failed,
         step_state: String::new().into(),
     }
 }
@@ -953,5 +967,53 @@ fn to_ai_snapshot(s: &SystemSnapshot) -> AiSnapshot {
         // 本地视图只有整机指标；进程级快照让 AI 自己用 ps 去取更有价值。
         top_processes: Vec::new(),
         sampled_at: Some(Utc::now()),
+    }
+}
+
+#[cfg(test)]
+mod message_card_tests {
+    use super::*;
+
+    fn proposal(outcome: Option<CommandOutcome>) -> ProposedCommand {
+        ProposedCommand {
+            id: "card-1".into(),
+            cmd: "Get-Process".into(),
+            explain: "Inspect running processes".into(),
+            side_effect: String::new(),
+            timeout_s: None,
+            risk: RiskLevel::ReadOnly,
+            gate: Gate::DirectRun,
+            blocked_reason: None,
+            outcome,
+            disposition: Disposition::Executed,
+        }
+    }
+
+    #[test]
+    fn command_card_distinguishes_success_from_failed_or_unknown_exit() {
+        let success = message_card(&proposal(Some(CommandOutcome {
+            exit_code: Some(0),
+            output: "ok".into(),
+            timed_out: false,
+        })));
+        assert!(!success.step_failed);
+        assert_eq!(success.text.as_str(), "ok");
+        assert_eq!(success.disposition.as_str(), "executed · exit 0");
+
+        for outcome in [
+            CommandOutcome {
+                exit_code: Some(1),
+                output: "error".into(),
+                timed_out: false,
+            },
+            CommandOutcome {
+                exit_code: None,
+                output: String::new(),
+                timed_out: false,
+            },
+        ] {
+            let failed = message_card(&proposal(Some(outcome)));
+            assert!(failed.step_failed);
+        }
     }
 }

@@ -244,8 +244,14 @@ fn set_panel_open(core: &AppCore, win: &Rc<AppWindow>, open: bool) {
         None => return,
     };
     apply_conversation(core, win, &id);
+    let target = win.get_active_tab_id().to_string();
+    let anchor = if target.is_empty() || target == "welcome" {
+        None
+    } else {
+        Some(target)
+    };
     // 「1+1>2」：硬件告警时打开面板就顺手起一轮 Triage，不用自己组织问题。
-    let Some(snapshot) = local_snapshot(core) else {
+    let Some(snapshot) = snapshot_for_anchor(core, anchor.as_deref()) else {
         return;
     };
     let Some(reason) = hot_reason(&snapshot) else {
@@ -253,12 +259,6 @@ fn set_panel_open(core: &AppCore, win: &Rc<AppWindow>, open: bool) {
     };
     // 自动排查独占一条会话：不抢占用户正在看的那条，也不重复起（同一锚点
     // 已经有一条自动排查会话就跳过）。
-    let target = win.get_active_tab_id().to_string();
-    let anchor = if target.is_empty() || target == "welcome" {
-        None
-    } else {
-        Some(target)
-    };
     let existing = core.conversations.lock().ok().and_then(|g| {
         g.conversations
             .iter()
@@ -296,6 +296,60 @@ fn local_snapshot(core: &AppCore) -> Option<SystemSnapshot> {
         .borrow()
         .values()
         .find_map(|w| w.local_snap.lock().ok().map(|s| s.clone()))
+}
+
+/// Match the monitor snapshot to the conversation's terminal anchor. Remote
+/// sessions must never receive the desktop's unrelated CPU/memory readings.
+fn snapshot_for_anchor(core: &AppCore, anchor_tab: Option<&str>) -> Option<SystemSnapshot> {
+    let Some(tab_id) = anchor_tab else {
+        return local_snapshot(core).filter(|s| s.mem_total_mib > 0);
+    };
+    let states = core.window_states.borrow();
+    for window in states.values() {
+        let status = window
+            .statuses
+            .lock()
+            .ok()
+            .and_then(|statuses| statuses.get(tab_id).cloned());
+        let Some(status) = status else {
+            continue;
+        };
+        if status.is_local {
+            return window
+                .local_snap
+                .lock()
+                .ok()
+                .map(|snapshot| snapshot.clone())
+                .filter(|s| s.mem_total_mib > 0);
+        }
+        if status.state != 1 || status.mem_total_kib == 0 {
+            return None;
+        }
+        let mem_used_mib = status.mem_used_kib / 1024;
+        let mem_total_mib = status.mem_total_kib / 1024;
+        let swap_used_mib = status.swap_used_kib / 1024;
+        let swap_total_mib = status.swap_total_kib / 1024;
+        let net_rx_per_sec = status.net.iter().map(|(_, rx, _)| rx).sum();
+        let net_tx_per_sec = status.net.iter().map(|(_, _, tx)| tx).sum();
+        return Some(SystemSnapshot {
+            cpu_percent: status.cpu,
+            mem_percent: status.mem_used_kib as f32 / status.mem_total_kib as f32,
+            swap_percent: if status.swap_total_kib > 0 {
+                status.swap_used_kib as f32 / status.swap_total_kib as f32
+            } else {
+                0.0
+            },
+            mem_used_mib,
+            mem_total_mib,
+            swap_used_mib,
+            swap_total_mib,
+            net_bytes_per_sec: net_rx_per_sec + net_tx_per_sec,
+            net_rx_per_sec,
+            net_tx_per_sec,
+            disks: status.disks,
+        });
+    }
+    None
 }
 
 /// 硬件告警判据：AI 抽屉据此主动发起 Triage。
@@ -345,10 +399,18 @@ fn tab_session(
 fn shell_kind(session: Option<&crate::config::Session>) -> ShellKind {
     use crate::config::SessionKind;
     match session.map(|s| s.kind) {
-        Some(SessionKind::Local) => {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-            ShellKind::from_local_path(&shell)
-        }
+        Some(SessionKind::Local) => session
+            .map(|s| {
+                let fallback = std::env::var("SHELL").unwrap_or_else(|_| {
+                    if cfg!(windows) {
+                        "powershell.exe".to_string()
+                    } else {
+                        "/bin/sh".to_string()
+                    }
+                });
+                ShellKind::from_local_session(&s.host, &fallback)
+            })
+            .unwrap_or_default(),
         Some(SessionKind::Serial) => ShellKind::Serial,
         Some(SessionKind::Telnet) => ShellKind::Telnet,
         _ => ShellKind::Posix,
@@ -521,7 +583,7 @@ fn ask_question(
     );
     // 会话级模式（F3）：这一轮按会话自己的 ask/agent 跑，不看全局默认。
     cfg.mode = mode;
-    let local = local_snapshot(core);
+    let local = snapshot_for_anchor(core, anchor.as_deref());
     spawn_ask(
         core.runtime.handle(),
         AskParams {
