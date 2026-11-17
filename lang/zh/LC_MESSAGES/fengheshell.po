@@ -763,6 +763,9 @@ msgstr "模型设置"
 msgid "Clear conversation"
 msgstr "清空对话"
 
+msgid "Ask about this system or session…"
+msgstr "询问本机或会话相关问题…"
+
 msgid "AI Copilot"
 msgstr "AI Copilot"
 
@@ -777,3 +780,4 @@ msgstr "本地脱敏"
 
 msgid "Auto-run read-only commands"
 msgstr "只读命令免确认执行"
+

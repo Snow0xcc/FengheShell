@@ -42,7 +42,10 @@ impl DeepSeekClient {
         Self {
             api_key,
             chat_endpoint,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
         }
     }
 }

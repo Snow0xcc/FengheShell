@@ -590,6 +590,21 @@ fn ask_question(
     );
     // 会话级模式（F3）：这一轮按会话自己的 ask/agent 跑，不看全局默认。
     cfg.mode = mode;
+    // 前置校验：没有 API Key（本地 Ollama 除外）就不要进入「思考中」空转，
+    // 直接给一条可执行的错误提示。
+    if cfg.api_key.trim().is_empty() && cfg.protocol != "ollama" {
+        push_notice(
+            &conversations,
+            &win.as_weak(),
+            conversation_id,
+            ROLE_ERROR,
+            crate::i18n::t(
+                "尚未配置模型 / API Key。请点击右上角「更多 → 模型设置」先配置，再开始对话。",
+                "No model or API key configured. Open More → LLM settings first, then ask.",
+            ),
+        );
+        return;
+    }
     let local = snapshot_for_anchor(core, anchor.as_deref());
     spawn_ask(
         core.runtime.handle(),

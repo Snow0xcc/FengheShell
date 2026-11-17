@@ -997,9 +997,6 @@ export component AiPanel inherits Rectangle {
                     }
 
                     for msg in root.messages : Rectangle {
-                        // Natural height only — never let a message row stretch to
-                        // fill the vertical layout's leftover space.
-                        vertical-stretch: 0;
                         if msg.role == 2 : AiCommandCard {
                             message: msg;
                             run-card(id) => { root.run-card(id); }
@@ -1009,7 +1006,6 @@ export component AiPanel inherits Rectangle {
                         if msg.role == 0 : HorizontalLayout {
                             alignment: end;
                             Rectangle {
-                                vertical-stretch: 0;
                                 max-width: parent.width * 0.86;
                                 border-radius: Theme.radius-md;
                                 background: Theme.bg-elevated;
@@ -1139,7 +1135,7 @@ export component AiPanel inherits Rectangle {
                     horizontal-stretch: 1;
                     border-radius: Theme.radius-md;
                     border-width: 1px;
-                    border-color: Theme.border-subtle;
+                    border-color: input.has-focus ? Theme.accent : Theme.border-strong;
                     background: Theme.bg-root;
                     HorizontalLayout {
                         padding: 4px;
@@ -1148,6 +1144,7 @@ export component AiPanel inherits Rectangle {
                             horizontal-stretch: 1;
                             single-line: true;
                             text: "";
+                            placeholder-text: @tr("Ask about this system or session…");
                             font-family: Theme.ui-font-family;
                             font-size: Theme.fs-sm;
                             color: Theme.text-primary;
@@ -1163,7 +1160,7 @@ export component AiPanel inherits Rectangle {
                             width: 28px;
                             height: 28px;
                             border-radius: Theme.radius-sm;
-                            background: stop-ta.has-hover ? Theme.bg-active : Theme.bg-elevated;
+                            background: stop-ta.has-hover ? Theme.danger : Theme.danger.with-alpha(0.85);
                             stop-ta := TouchArea {
                                 mouse-cursor: pointer;
                                 clicked => { root.cancel(); }
@@ -1172,7 +1169,7 @@ export component AiPanel inherits Rectangle {
                                 text: "\u{E047}";
                                 font-family: "Material Icons";
                                 font-size: 16px;
-                                color: Theme.text-secondary;
+                                color: #ffffff;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }

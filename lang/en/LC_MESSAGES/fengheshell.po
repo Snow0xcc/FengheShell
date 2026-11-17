@@ -769,6 +769,9 @@ msgstr "LLM settings"
 msgid "Clear conversation"
 msgstr "Clear conversation"
 
+msgid "Ask about this system or session…"
+msgstr "Ask about this system or session…"
+
 msgid "Protocol (openai-completions | deepseek-thinking | anthropic-messages | ollama)"
 msgstr "Protocol (openai-completions | deepseek-thinking | anthropic-messages | ollama)"
 
@@ -780,3 +783,4 @@ msgstr "Redact secrets locally"
 
 msgid "Auto-run read-only commands"
 msgstr "Auto-run read-only commands"
+
