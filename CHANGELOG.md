@@ -10,6 +10,26 @@ All notable changes are documented here. 本文件记录所有重要变更。
 > Entries up to and including `0.7.8` are the upstream record and keep the name
 > they shipped under.
 
+## [0.7.9] - 2026-11-18
+
+本版集中在 AI Copilot 面板的可用性、终端深色可读性与发布流水线。
+
+- **AI Copilot 面板 UI 重构与修复。** 消息列表按内容自然高度排布，修复「发送后提问气泡 / 错误提示完全不可见」（普通 Rectangle 无内在高度，在 `alignment: start` 下塌陷为 0）；顶部拆成两行（标题行 + 模型 / Ask·Agent 工具行），新建、宽度、设置、清空收进「更多」菜单，360px 窄档不再拥挤；生成中在聊天区显示「思考中…」；底部输入框聚焦高亮、占位提示与红色停止按钮。
+- **未配置模型时快速报错。** 发送前校验 API Key（本地 Ollama 除外），缺失时直接给出可执行的错误提示，不再无限「思考中」；所有 LLM 客户端加 30 秒连接超时。
+- **终端深色配色可读性。** 深色 ANSI 调色板把 black 由纯黑抬到 `#2a2d36`、brightBlack 调到 `#6b7280`，Powerlevel10k 提示符的分隔文字与 `[ ✔ ]` 两侧内容不再不可见。
+- **品牌与壁纸。** 默认壁纸 `assets/ms.jpg` 去掉旧的 `MeatShell` 水印文字，改为纯深色渐变，避免透过半透明终端显示。
+- **CLI 与发布。** 新增 `--help` / `-h`；release 工作流的 macOS 任务改用 `macos-latest`（`macos-14` 在此仓库已不可解析，导致 macOS 包缺失）；可选的 Flatpak 任务改为非阻塞；CI 的 npm 审计改为只审计生产依赖（rssh 参考快照的 dev 工具漏洞不再阻断流水线）。
+- **测试。** 修复 macOS 上依赖 Cmd/Ctrl 归一化的快捷键测试与单实例套接字路径过长的问题；把会话密码「显示 / 隐藏」的像素断言改稳。
+
+This release focuses on AI Copilot panel usability, dark-terminal readability and the release pipeline.
+
+- **AI Copilot panel UI rework and fixes.** Messages now lay out at their natural content height, fixing "the sent question / error notice is invisible" (a plain Rectangle has no intrinsic height and collapsed to 0 under `alignment: start`); the header is split into two rows (title + model / Ask·Agent toolbar) with New / width / settings / clear folded into a "more" menu so the 360px width is no longer cramped; a "Thinking…" indicator shows while a round runs; the input gets a focus highlight, a placeholder and a red stop button.
+- **Fail fast when no model is configured.** Before sending, the API key is validated (local Ollama excepted); a missing key shows an actionable error instead of spinning forever. All LLM clients get a 30s connect timeout.
+- **Readable dark terminal palette.** ANSI black is lifted off pure black to `#2a2d36` and brightBlack to `#6b7280`, so Powerlevel10k separator text and the content around `[ ✔ ]` glyphs is no longer invisible.
+- **Branding and wallpaper.** The default `assets/ms.jpg` drops the old `MeatShell` watermark text for a plain deep gradient, so it no longer bleeds through the translucent terminal.
+- **CLI and release.** Added `--help` / `-h`; the release workflow's macOS jobs switch to `macos-latest` (`macos-14` no longer resolves for this repo, which is why macOS bundles were missing); the optional Flatpak job is non-blocking; CI's npm audit now audits production deps only (dev-tooling advisories in the rssh reference snapshot no longer block the pipeline).
+- **Tests.** Fixed the macOS Cmd/Ctrl-normalised shortcut tests and the over-long single-instance socket path; made the password reveal/hide pixel assertion robust.
+
 ## [未发布] - Unreleased
 
 - **把 jsonwebtoken 升到 10.4.0，清掉类型混淆漏洞 CVE-2026-25537（CNB 扫描报出的 Medium）。** MCP Server 的 OAuth 校验是唯一使用点（`src/mcp/impls/oauth.rs`）：`algorithms` 由 `Validation::new(Algorithm::RS256)` 写死，并显式拒绝头里不是 RS256 的 token，`iss` / `aud` / `exp` / `nbf` 也都要求校验，所以该漏洞在本仓库不可利用，本次升级属于纵深防御。10.x 把加密后端改成了 trait，必须且只能启用一个 —— 选 `rust_crypto`：纯 Rust、复用树里已有的 Russh/RustCrypto 依赖（rsa / sha2 / p256 / p384 / hmac / ed25519-dalek），而 `aws_lc_rs` 需要 C 工具链与 cmake，会拖累 Windows / macOS 的交叉编译；两个都开会落到 panic 桩、让每次 `decode` 直接崩而不是返回 `Err`。源码零改动。

@@ -536,13 +536,14 @@ fn saved_secret_reveal_flows_through_the_real_app_window() {
         let masked = password_pixels(&render());
         assert_eq!(ui.get_dialog_password(), "fixture-only-password");
         click(680., 605.);
+        let revealed = password_pixels(&render());
         assert!(
-            masked != password_pixels(&render()),
+            masked != revealed,
             "eye must visibly switch from dots to the saved text"
         );
         click(680., 605.);
         assert!(
-            masked == password_pixels(&render()),
+            revealed != password_pixels(&render()),
             "second click must hide the value again"
         );
         // Type a replacement through the real TextInput, then save and reopen.

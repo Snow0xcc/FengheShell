@@ -1804,7 +1804,7 @@ dependencies = [
 
 [[package]]
 name = "fengheshell"
-version = "0.7.8"
+version = "0.7.9"
 dependencies = [
  "aes",
  "ai-copilot",
